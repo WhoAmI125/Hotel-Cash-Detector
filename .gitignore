@@ -1,3 +1,20 @@
 *.pt
 *.mp4
 *.avi
+*.mkv
+*.mov
+
+# Flask uploads and outputs
+uploads/
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/

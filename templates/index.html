@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cash Transaction Detector - Upload Videos</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100">
+  <!-- Header -->
+  <header class="bg-slate-800 text-white py-4 px-6 shadow-lg">
+    <div class="container mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <i class="fas fa-money-bill-wave text-2xl"></i>
+        <h1 class="text-xl font-semibold">Hotel Cash Transaction Detector</h1>
+      </div>
+      <div class="text-sm text-gray-300">
+        <i class="far fa-clock mr-1"></i>
+        <span id="currentTime"></span>
+      </div>
+    </div>
+  </header>
+
+  <div class="container mx-auto px-6 py-8">
+    <!-- Info Banner -->
+    <div class="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded-r">
+      <div class="flex items-center">
+        <i class="fas fa-info-circle text-blue-500 text-xl mr-3"></i>
+        <div>
+          <p class="font-semibold text-blue-800">Automatic Transaction Detection</p>
+          <p class="text-sm text-blue-700">Upload up to 5 videos. The system will detect cash transactions and extract clips automatically.</p>
+          <p class="text-xs text-blue-600 mt-1">
+            <i class="fas fa-cog mr-1"></i>
+            Using cashier zone detection • Hand distance: 100px • Min frames: 1 • Cashier overlap: 70%
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Section -->
+    <div class="bg-white rounded-lg shadow-md p-8 mb-8">
+      <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+        <i class="fas fa-upload text-blue-600 mr-3"></i>
+        Upload Videos
+      </h2>
+
+      <div class="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center hover:border-blue-500 transition-colors cursor-pointer" id="dropZone">
+        <i class="fas fa-cloud-upload-alt text-6xl text-gray-400 mb-4"></i>
+        <p class="text-lg text-gray-700 mb-2">Drag and drop videos here</p>
+        <p class="text-sm text-gray-500 mb-4">or click to browse</p>
+        <input type="file" id="videoInput" accept="video/*" multiple class="hidden">
+        <button onclick="document.getElementById('videoInput').click()" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition-colors">
+          Select Videos
+        </button>
+        <p class="text-xs text-gray-400 mt-4">Maximum 5 videos • MP4, AVI, MOV, MKV • Max 500MB each</p>
+      </div>
+
+      <!-- Selected Files -->
+      <div id="selectedFiles" class="mt-6 hidden">
+        <h3 class="font-semibold text-gray-700 mb-3">Selected Videos:</h3>
+        <div id="fileList" class="space-y-2"></div>
+        <button id="uploadBtn" class="mt-4 bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-8 rounded-lg transition-colors w-full flex items-center justify-center">
+          <i class="fas fa-play mr-2"></i>
+          Start Analysis
+        </button>
+      </div>
+    </div>
+
+    <!-- Processing Status -->
+    <div id="processingSection" class="hidden">
+      <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+        <i class="fas fa-cog fa-spin text-blue-600 mr-3"></i>
+        Processing Videos
+      </h2>
+      <div id="jobsList" class="space-y-4"></div>
+    </div>
+  </div>
+
+  <script>
+    let selectedFiles = [];
+    const MAX_FILES = 5;
+
+    // Update time
+    function updateTime() {
+      const now = new Date();
+      document.getElementById('currentTime').textContent = now.toLocaleString('ko-KR');
+    }
+    updateTime();
+    setInterval(updateTime, 1000);
+
+    // File input handling
+    const fileInput = document.getElementById('videoInput');
+    const dropZone = document.getElementById('dropZone');
+    const selectedFilesDiv = document.getElementById('selectedFiles');
+    const fileListDiv = document.getElementById('fileList');
+    const uploadBtn = document.getElementById('uploadBtn');
+
+    fileInput.addEventListener('change', handleFiles);
+
+    // Drag and drop
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('border-blue-500', 'bg-blue-50');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+      fileInput.files = e.dataTransfer.files;
+      handleFiles();
+    });
+
+    function handleFiles() {
+      const files = Array.from(fileInput.files);
+      
+      if (files.length > MAX_FILES) {
+        alert(`Maximum ${MAX_FILES} videos allowed!`);
+        return;
+      }
+
+      selectedFiles = files;
+      displaySelectedFiles();
+    }
+
+    function displaySelectedFiles() {
+      if (selectedFiles.length === 0) {
+        selectedFilesDiv.classList.add('hidden');
+        return;
+      }
+
+      selectedFilesDiv.classList.remove('hidden');
+      fileListDiv.innerHTML = '';
+
+      selectedFiles.forEach((file, index) => {
+        const fileSize = (file.size / (1024 * 1024)).toFixed(2);
+        const fileItem = document.createElement('div');
+        fileItem.className = 'flex items-center justify-between bg-gray-50 p-3 rounded-lg';
+        fileItem.innerHTML = `
+          <div class="flex items-center gap-3">
+            <i class="fas fa-video text-blue-600"></i>
+            <div>
+              <p class="font-medium text-gray-800">${file.name}</p>
+              <p class="text-sm text-gray-500">${fileSize} MB</p>
+            </div>
+          </div>
+          <button onclick="removeFile(${index})" class="text-red-500 hover:text-red-700">
+            <i class="fas fa-times"></i>
+          </button>
+        `;
+        fileListDiv.appendChild(fileItem);
+      });
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      displaySelectedFiles();
+    }
+
+    // Upload and process
+    uploadBtn.addEventListener('click', async () => {
+      if (selectedFiles.length === 0) return;
+
+      const formData = new FormData();
+      selectedFiles.forEach(file => {
+        formData.append('videos', file);
+      });
+
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Uploading...';
+
+      try {
+        const response = await fetch('/upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        const data = await response.json();
+        
+        if (data.error) {
+          alert('Error: ' + data.error);
+          uploadBtn.disabled = false;
+          uploadBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Start Analysis';
+          return;
+        }
+
+        // Show processing section
+        document.getElementById('processingSection').classList.remove('hidden');
+        
+        // Monitor each job
+        data.jobs.forEach(job => {
+          createJobCard(job);
+          monitorJob(job.job_id);
+        });
+
+        // Reset upload form
+        selectedFiles = [];
+        fileInput.value = '';
+        displaySelectedFiles();
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Start Analysis';
+
+      } catch (error) {
+        alert('Upload failed: ' + error.message);
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = '<i class="fas fa-play mr-2"></i>Start Analysis';
+      }
+    });
+
+    function createJobCard(job) {
+      const jobCard = document.createElement('div');
+      jobCard.id = `job-${job.job_id}`;
+      jobCard.className = 'bg-white rounded-lg shadow-md p-6';
+      jobCard.innerHTML = `
+        <div class="flex items-center justify-between mb-4">
+          <div class="flex items-center gap-3">
+            <i class="fas fa-video text-blue-600 text-xl"></i>
+            <div>
+              <h3 class="font-semibold text-gray-800">${job.filename}</h3>
+              <p class="text-sm text-gray-500" id="stage-${job.job_id}">Initializing...</p>
+            </div>
+          </div>
+          <span class="text-sm font-semibold text-blue-600" id="progress-text-${job.job_id}">0%</span>
+        </div>
+        
+        <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
+          <div id="progress-bar-${job.job_id}" class="bg-blue-600 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+        
+        <div id="results-${job.job_id}" class="hidden mt-4">
+          <div class="bg-green-50 border-l-4 border-green-500 p-4 mb-4">
+            <p class="font-semibold text-green-800">
+              <i class="fas fa-check-circle mr-2"></i>
+              Analysis Complete
+            </p>
+            <p class="text-sm text-green-700" id="summary-${job.job_id}"></p>
+          </div>
+          <div id="clips-${job.job_id}" class="space-y-2"></div>
+        </div>
+      `;
+      
+      document.getElementById('jobsList').appendChild(jobCard);
+    }
+
+    async function monitorJob(jobId) {
+      const interval = setInterval(async () => {
+        try {
+          const response = await fetch(`/status/${jobId}`);
+          const status = await response.json();
+
+          // Update progress
+          document.getElementById(`progress-bar-${jobId}`).style.width = status.progress + '%';
+          document.getElementById(`progress-text-${jobId}`).textContent = status.progress + '%';
+          document.getElementById(`stage-${jobId}`).textContent = status.stage || 'Processing...';
+
+          if (status.status === 'completed') {
+            clearInterval(interval);
+            showResults(jobId, status);
+          } else if (status.status === 'error') {
+            clearInterval(interval);
+            showError(jobId, status.error);
+          }
+        } catch (error) {
+          console.error('Error monitoring job:', error);
+        }
+      }, 1000);
+    }
+
+    function showResults(jobId, status) {
+      const resultsDiv = document.getElementById(`results-${jobId}`);
+      const clipsDiv = document.getElementById(`clips-${jobId}`);
+      const summaryDiv = document.getElementById(`summary-${jobId}`);
+
+      resultsDiv.classList.remove('hidden');
+
+      if (status.clips && status.clips.length > 0) {
+        summaryDiv.textContent = `Found ${status.clips.length} transaction(s)`;
+
+        clipsDiv.innerHTML = '<h4 class="font-semibold text-gray-700 mb-2">Extracted Clips:</h4>';
+        
+        status.clips.forEach((clip, index) => {
+          const clipItem = document.createElement('div');
+          clipItem.className = 'flex items-center justify-between bg-gray-50 p-3 rounded-lg';
+          clipItem.innerHTML = `
+            <div class="flex items-center gap-3">
+              <i class="fas fa-film text-green-600"></i>
+              <div>
+                <p class="font-medium text-gray-800">Transaction ${index + 1}</p>
+                <p class="text-sm text-gray-500">Time: ${clip.start_time}s - ${clip.end_time}s (${clip.duration}s)</p>
+              </div>
+            </div>
+            <a href="/download/${jobId}/${clip.filename}" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm transition-colors">
+              <i class="fas fa-download mr-1"></i>
+              Download
+            </a>
+          `;
+          clipsDiv.appendChild(clipItem);
+        });
+      } else {
+        summaryDiv.textContent = status.message || 'No transactions detected';
+      }
+    }
+
+    function showError(jobId, error) {
+      const resultsDiv = document.getElementById(`results-${jobId}`);
+      resultsDiv.classList.remove('hidden');
+      resultsDiv.innerHTML = `
+        <div class="bg-red-50 border-l-4 border-red-500 p-4">
+          <p class="font-semibold text-red-800">
+            <i class="fas fa-exclamation-circle mr-2"></i>
+            Error
+          </p>
+          <p class="text-sm text-red-700">${error}</p>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>
+

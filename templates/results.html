@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Results - Cash Transaction Detector</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="bg-gray-100">
+  <!-- Header -->
+  <header class="bg-slate-800 text-white py-4 px-6 shadow-lg">
+    <div class="container mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <i class="fas fa-money-bill-wave text-2xl"></i>
+        <h1 class="text-xl font-semibold">Hotel Cash Transaction Detector</h1>
+      </div>
+      <a href="/" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm transition-colors">
+        <i class="fas fa-arrow-left mr-2"></i>
+        Back to Upload
+      </a>
+    </div>
+  </header>
+
+  <div class="container mx-auto px-6 py-8">
+    <!-- Video Info -->
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+      <div class="flex items-center gap-4 mb-4">
+        <i class="fas fa-video text-blue-600 text-3xl"></i>
+        <div>
+          <h2 class="text-2xl font-bold text-gray-800">{{ status.filename }}</h2>
+          <p class="text-gray-600">
+            <i class="far fa-clock mr-1"></i>
+            Processed: {{ status.completed or status.started }}
+          </p>
+        </div>
+      </div>
+
+      {% if status.status == 'completed' %}
+        {% if status.clips and status.clips|length > 0 %}
+          <div class="bg-green-50 border-l-4 border-green-500 p-4">
+            <p class="font-semibold text-green-800">
+              <i class="fas fa-check-circle mr-2"></i>
+              Analysis Complete
+            </p>
+            <p class="text-sm text-green-700">
+              Found {{ status.transactions_count }} transaction(s) • Extracted {{ status.clips|length }} clip(s)
+            </p>
+          </div>
+        {% else %}
+          <div class="bg-yellow-50 border-l-4 border-yellow-500 p-4">
+            <p class="font-semibold text-yellow-800">
+              <i class="fas fa-info-circle mr-2"></i>
+              No Transactions Detected
+            </p>
+            <p class="text-sm text-yellow-700">
+              {{ status.message or 'No hand-to-hand cash transactions were detected in this video.' }}
+            </p>
+          </div>
+        {% endif %}
+      {% elif status.status == 'error' %}
+        <div class="bg-red-50 border-l-4 border-red-500 p-4">
+          <p class="font-semibold text-red-800">
+            <i class="fas fa-exclamation-circle mr-2"></i>
+            Processing Error
+          </p>
+          <p class="text-sm text-red-700">{{ status.error }}</p>
+        </div>
+      {% else %}
+        <div class="bg-blue-50 border-l-4 border-blue-500 p-4">
+          <p class="font-semibold text-blue-800">
+            <i class="fas fa-spinner fa-spin mr-2"></i>
+            Processing...
+          </p>
+          <p class="text-sm text-blue-700">{{ status.stage }}</p>
+          <div class="mt-3 w-full bg-gray-200 rounded-full h-2">
+            <div class="bg-blue-600 h-2 rounded-full" style="width: {{ status.progress }}%"></div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+
+    <!-- Extracted Clips -->
+    {% if status.clips and status.clips|length > 0 %}
+      <div class="bg-white rounded-lg shadow-md p-6">
+        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
+          <i class="fas fa-film text-blue-600 mr-3"></i>
+          Extracted Transaction Clips
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {% for clip in status.clips %}
+            <div class="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:shadow-md transition-shadow">
+              <div class="flex items-start justify-between mb-3">
+                <div>
+                  <h4 class="font-semibold text-gray-800 text-lg mb-1">
+                    <i class="fas fa-money-bill-wave text-green-600 mr-2"></i>
+                    Transaction {{ loop.index }}
+                  </h4>
+                  <p class="text-sm text-gray-600">
+                    <i class="fas fa-users mr-1"></i>
+                    Person {{ clip.p1_id }} ↔ Person {{ clip.p2_id }} ({{ clip.hand_type }})
+                  </p>
+                  <p class="text-sm text-gray-600">
+                    <i class="far fa-clock mr-1"></i>
+                    {{ clip.start_time }}s - {{ clip.end_time }}s
+                  </p>
+                  <p class="text-sm text-gray-600">
+                    <i class="fas fa-stopwatch mr-1"></i>
+                    Duration: {{ clip.duration }}s ({{ clip.frames }} frames)
+                  </p>
+                </div>
+                <span class="bg-green-100 text-green-800 text-xs font-semibold px-2 py-1 rounded">
+                  Detected
+                </span>
+              </div>
+
+              <div class="flex gap-2">
+                <a href="/download/{{ job_id }}/{{ clip.filename }}" 
+                   class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-center px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                  <i class="fas fa-download mr-2"></i>
+                  Download Clip
+                </a>
+              </div>
+
+              <p class="text-xs text-gray-500 mt-3 truncate">
+                <i class="fas fa-file mr-1"></i>
+                {{ clip.filename }}
+              </p>
+            </div>
+          {% endfor %}
+        </div>
+
+        <!-- Download All Button -->
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <button onclick="downloadAll()" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors">
+            <i class="fas fa-download mr-2"></i>
+            Download All Clips ({{ status.clips|length }})
+          </button>
+        </div>
+      </div>
+    {% endif %}
+
+    <!-- Statistics -->
+    {% if status.clips and status.clips|length > 0 %}
+      <div class="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="bg-white rounded-lg shadow-md p-6">
+          <div class="flex items-center gap-3">
+            <div class="bg-blue-100 p-3 rounded-lg">
+              <i class="fas fa-video text-blue-600 text-2xl"></i>
+            </div>
+            <div>
+              <p class="text-sm text-gray-600">Total Clips</p>
+              <p class="text-2xl font-bold text-gray-800">{{ status.clips|length }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow-md p-6">
+          <div class="flex items-center gap-3">
+            <div class="bg-green-100 p-3 rounded-lg">
+              <i class="fas fa-handshake text-green-600 text-2xl"></i>
+            </div>
+            <div>
+              <p class="text-sm text-gray-600">Transactions</p>
+              <p class="text-2xl font-bold text-gray-800">{{ status.transactions_count }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-lg shadow-md p-6">
+          <div class="flex items-center gap-3">
+            <div class="bg-purple-100 p-3 rounded-lg">
+              <i class="fas fa-clock text-purple-600 text-2xl"></i>
+            </div>
+            <div>
+              <p class="text-sm text-gray-600">Avg Duration</p>
+              <p class="text-2xl font-bold text-gray-800">
+                {{ "%.1f"|format((status.clips|sum(attribute='duration')) / (status.clips|length)) }}s
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <script>
+    function downloadAll() {
+      {% for clip in status.clips %}
+        setTimeout(() => {
+          window.open('/download/{{ job_id }}/{{ clip.filename }}', '_blank');
+        }, {{ loop.index0 * 500 }});
+      {% endfor %}
+    }
+
+    // Auto-refresh if still processing
+    {% if status.status == 'processing' %}
+      setTimeout(() => {
+        location.reload();
+      }, 2000);
+    {% endif %}
+  </script>
+</body>
+</html>
+

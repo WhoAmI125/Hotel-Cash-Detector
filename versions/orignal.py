@@ -12,7 +12,7 @@ import time
 
 class SimpleHandTouchConfig:
     """Simple configuration"""
-    POSE_MODEL = 'yolov8s-pose.pt'
+    POSE_MODEL = 'models/yolov8s-pose.pt'
     
     # Simple rule: hands close = transaction
     HAND_TOUCH_DISTANCE = 80  # pixels - hands must be VERY close
