@@ -17,5 +17,35 @@
   "MERGE_CLIPS_WITHIN_SECONDS": 0.5,
   "MAX_VIDEOS_PER_UPLOAD": 5,
   "MAX_FILE_SIZE_MB": 2048,
-  "ALLOWED_EXTENSIONS": ["mp4", "avi", "mov", "mkv"]
+  "ALLOWED_EXTENSIONS": ["mp4", "avi", "mov", "mkv"],
+  
+  "DETECTION_TYPES": {
+    "CASH_EXCHANGE": {
+      "enabled": true,
+      "priority": 3,
+      "label": "현금 거래",
+      "color": [0, 255, 0],
+      "icon": "money-bill-wave"
+    },
+    "VIOLENCE": {
+      "enabled": true,
+      "priority": 1,
+      "label": "폭력",
+      "color": [0, 0, 255],
+      "icon": "hand-fist",
+      "confidence_threshold": 0.7,
+      "min_duration_seconds": 1.0
+    },
+    "FIRE": {
+      "enabled": true,
+      "priority": 2,
+      "label": "화재",
+      "color": [0, 165, 255],
+      "icon": "fire",
+      "confidence_threshold": 0.4
+    }
+  },
+  
+  "VIOLENCE_MODEL": "models/yolo_small_weights.pt",
+  "FIRE_MODEL": "models/yolov8n.pt"
 }

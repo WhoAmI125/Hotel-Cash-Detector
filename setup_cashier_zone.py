@@ -185,7 +185,7 @@ def main():
     config_file = camera_folder / "config.json"
     
     if config_file.exists():
-        with open(config_file, 'r') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             config = json.load(f)
         print(f"\n✅ Loaded existing config from {config_file}")
     else:
@@ -206,8 +206,8 @@ def main():
     config["CASHIER_ZONE"] = zone
     
     # Save config
-    with open(config_file, 'w') as f:
-        json.dump(config, f, indent=2)
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
     
     print("\n" + "=" * 70)
     print("✅ CALIBRATION COMPLETE!")

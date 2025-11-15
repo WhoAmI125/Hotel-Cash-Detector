@@ -18,15 +18,16 @@ import numpy as np
 import math
 import time
 
-# Import the detection classes from main.py
+# Import the detection classes
 from main import SimpleHandTouchConfig, SimpleHandTouchDetector
+from multi_detector import MultiEventDetector
 
 app = Flask(__name__)
 
 # Load configuration from config.json
 CONFIG_FILE = 'config.json'
 try:
-    with open(CONFIG_FILE, 'r') as f:
+    with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         APP_CONFIG = json.load(f)
     print(f"✅ Loaded configuration from {CONFIG_FILE}")
 except FileNotFoundError:
@@ -76,56 +77,58 @@ def request_entity_too_large(error):
 
 
 class TransactionClipExtractor:
-    """Extract clips around detected transactions using the EXACT logic from main.py"""
+    """Extract clips around detected events (Cash, Fire, Violence) using multi-detector"""
     
     def __init__(self, config_dict=None):
-        # Create SimpleHandTouchConfig from dict
-        self.config = SimpleHandTouchConfig()
-        
-        if config_dict:
-            # Update config with provided values
-            for key, value in config_dict.items():
-                if hasattr(self.config, key):
-                    setattr(self.config, key, value)
-        
-        # Initialize the detector with our config
-        self.detector = SimpleHandTouchDetector(self.config)
+        # Initialize multi-event detector
+        self.detector = MultiEventDetector(config_dict)
+        self.config_dict = config_dict
         
         # Clip extraction settings from config
         self.SECONDS_BEFORE = config_dict.get('SECONDS_BEFORE_TRANSACTION', 2)
         self.SECONDS_AFTER = config_dict.get('SECONDS_AFTER_TRANSACTION', 2)
         self.MERGE_THRESHOLD = config_dict.get('MERGE_CLIPS_WITHIN_SECONDS', 0.5)
         
-        print(f"🤖 Model: {self.config.POSE_MODEL}")
-        print(f"👋 Hand touch distance: {self.config.HAND_TOUCH_DISTANCE}px")
+        self.detection_types = config_dict.get('DETECTION_TYPES', {})
+        
         print(f"⏱️  Clip padding: {self.SECONDS_BEFORE}s before, {self.SECONDS_AFTER}s after")
         print(f"🔗 Merge clips within: {self.MERGE_THRESHOLD}s")
-        if self.config.CASHIER_ZONE:
-            print(f"🎯 Cashier Zone: {self.config.CASHIER_ZONE}")
         print()
     
     def detect_transactions(self, video_path, progress_callback=None):
-        """Detect all transactions in video using SimpleHandTouchDetector"""
+        """Detect all events (cash, fire, violence) in video and save annotated version"""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            return [], 0
+            return [], 0, None
         
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Reset detector state for new video
-        self.detector.transaction_history = {}
-        self.detector.person_id_map = {}
-        self.detector.next_stable_id = 1
-        self.detector.cashier_persistence = {}
-        self.detector.stats = {
-            'frames': 0,
-            'transactions': 0,
-            'confirmed_transactions': 0
-        }
+        # Create temporary annotated video with browser-compatible codec
+        temp_annotated_path = video_path.replace('.mp4', '_annotated_temp.mp4')
         
-        transactions = []
-        current_transaction = None
+        # Try H.264 codec first (best browser compatibility)
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+        annotated_writer = cv2.VideoWriter(temp_annotated_path, fourcc, fps, (width, height))
+        
+        # Fallback to mp4v if avc1 fails
+        if not annotated_writer.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            annotated_writer = cv2.VideoWriter(temp_annotated_path, fourcc, fps, (width, height))
+        
+        # Reset cash detector state if it exists
+        if 'CASH_EXCHANGE' in self.detector.detectors:
+            cash_detector = self.detector.detectors['CASH_EXCHANGE']
+            cash_detector.transaction_history = {}
+            cash_detector.person_id_map = {}
+            cash_detector.next_stable_id = 1
+            cash_detector.cashier_persistence = {}
+            cash_detector.stats = {'frames': 0, 'transactions': 0, 'confirmed_transactions': 0}
+        
+        all_events = []  # Store all detected events
+        current_events = {}  # Track ongoing events by type
         frame_num = 0
         
         print(f"📹 Analyzing video: {total_frames} frames at {fps} FPS")
@@ -141,99 +144,142 @@ class TransactionClipExtractor:
             if progress_callback and frame_num % 30 == 0:
                 progress_callback(int(frame_num / total_frames * 100))
             
-            # Use the EXACT same detection method from main.py
-            output_frame, confirmed_transactions = self.detector.detect_hand_touches(frame)
+            # Run ALL detectors on this frame (pass FPS for violence detector)
+            output_frame, detections_dict = self.detector.detect_all(frame, fps=fps)
             
-            # Track transactions
-            if confirmed_transactions:
-                for trans in confirmed_transactions:
-                    # Check if this is a new transaction or continuation
-                    trans_key = f"{trans['p1_id']}-{trans['p2_id']}"
-                    
-                    if current_transaction is None or current_transaction['key'] != trans_key:
-                        # New transaction detected
-                        if current_transaction:
-                            # Save previous transaction
-                            transactions.append(current_transaction)
+            # Save annotated frame
+            annotated_writer.write(output_frame)
+            
+            # Process each detection type
+            for det_type, detections in detections_dict.items():
+                if det_type == 'CASH_EXCHANGE':
+                    # Handle cash transactions
+                    for trans in detections:
+                        trans_key = f"{trans['p1_id']}-{trans['p2_id']}"
+                        event_key = f"CASH_{trans_key}"
                         
-                        current_transaction = {
-                            'key': trans_key,
-                            'start_frame': frame_num,
-                            'end_frame': frame_num,
-                            'start_time': frame_num / fps,
-                            'end_time': frame_num / fps,
-                            'p1_id': trans['p1_id'],
-                            'p2_id': trans['p2_id'],
-                            'hand_type': trans['hand_type']
-                        }
-                    else:
-                        # Continue existing transaction
-                        current_transaction['end_frame'] = frame_num
-                        current_transaction['end_time'] = frame_num / fps
-            else:
-                # No transactions in this frame
-                if current_transaction:
-                    # End the current transaction
-                    transactions.append(current_transaction)
-                    current_transaction = None
+                        if event_key not in current_events:
+                            current_events[event_key] = {
+                                'type': 'CASH_EXCHANGE',
+                                'key': trans_key,
+                                'start_frame': frame_num,
+                                'end_frame': frame_num,
+                                'start_time': frame_num / fps,
+                                'end_time': frame_num / fps,
+                                'p1_id': trans['p1_id'],
+                                'p2_id': trans['p2_id'],
+                                'hand_type': trans['hand_type']
+                            }
+                        else:
+                            current_events[event_key]['end_frame'] = frame_num
+                            current_events[event_key]['end_time'] = frame_num / fps
+                
+                else:
+                    # Handle violence/fire detections
+                    for detection in detections:
+                        event_key = f"{det_type}_{frame_num}"
+                        
+                        if det_type not in current_events:
+                            current_events[det_type] = {
+                                'type': det_type,
+                                'start_frame': frame_num,
+                                'end_frame': frame_num,
+                                'start_time': frame_num / fps,
+                                'end_time': frame_num / fps,
+                                'confidence': detection.get('confidence', 0.8),
+                                'description': detection.get('description', det_type)
+                            }
+                        else:
+                            current_events[det_type]['end_frame'] = frame_num
+                            current_events[det_type]['end_time'] = frame_num / fps
+            
+            # Check for ended events (no detection in this frame)
+            ended_events = []
+            for event_key, event in list(current_events.items()):
+                if event['end_frame'] < frame_num - 5:  # Event ended 5 frames ago
+                    all_events.append(event)
+                    ended_events.append(event_key)
+            
+            for event_key in ended_events:
+                del current_events[event_key]
         
-        # Add last transaction if exists
-        if current_transaction:
-            transactions.append(current_transaction)
+        # Add remaining active events
+        for event in current_events.values():
+            all_events.append(event)
         
         cap.release()
+        annotated_writer.release()
         
-        # Merge close transactions
-        merged_transactions = self._merge_close_transactions(transactions, fps)
+        # Merge close events
+        merged_events = self._merge_close_events(all_events, fps)
         
-        print(f"✅ Detection complete: Found {len(merged_transactions)} transaction(s)")
+        print(f"✅ Detection complete: Found {len(merged_events)} event(s)")
+        for event in merged_events:
+            det_type = event.get('type', 'UNKNOWN')
+            label = self.detection_types.get(det_type, {}).get('label', det_type)
+            print(f"  • {label}: {event['start_time']:.1f}s - {event['end_time']:.1f}s")
         
-        return merged_transactions, fps
+        return merged_events, fps, temp_annotated_path
     
-    def _merge_close_transactions(self, transactions, fps):
-        """Merge transactions that are close together"""
-        if not transactions:
+    def _merge_close_events(self, events, fps):
+        """Merge events that are close together (same type)"""
+        if not events:
             return []
         
-        merged = []
-        current = transactions[0].copy()
+        # Sort by type and start time
+        events.sort(key=lambda x: (x.get('type', ''), x['start_time']))
         
-        for trans in transactions[1:]:
-            # If transactions are within 1 second and same pair, merge them
-            if (trans['start_time'] - current['end_time'] <= 1.0 and 
-                trans['key'] == current['key']):
-                current['end_frame'] = trans['end_frame']
-                current['end_time'] = trans['end_time']
+        merged = []
+        current = events[0].copy()
+        
+        for event in events[1:]:
+            # If same type and within 1 second, merge them
+            if (event.get('type') == current.get('type') and 
+                event['start_time'] - current['end_time'] <= 1.0):
+                current['end_frame'] = event['end_frame']
+                current['end_time'] = event['end_time']
+                # For cash, merge keys if different
+                if 'key' in event and 'key' in current and event['key'] != current['key']:
+                    current['key'] = f"{current['key']},{event['key']}"
             else:
                 merged.append(current)
-                current = trans.copy()
+                current = event.copy()
         
         merged.append(current)
         return merged
     
-    def _merge_overlapping_clips(self, transactions, fps):
-        """Merge transactions that would create overlapping clips"""
-        if not transactions:
+    def _merge_overlapping_clips(self, events, fps):
+        """Merge events that would create overlapping clips"""
+        if not events:
             return []
         
         # Add margins and create clip ranges
         clip_ranges = []
-        for trans in transactions:
-            start_frame = max(0, trans['start_frame'] - int(self.SECONDS_BEFORE * fps))
-            end_frame = trans['end_frame'] + int(self.SECONDS_AFTER * fps)
+        for event in events:
+            start_frame = max(0, event['start_frame'] - int(self.SECONDS_BEFORE * fps))
+            end_frame = event['end_frame'] + int(self.SECONDS_AFTER * fps)
+            
+            # Get priority (lower = higher priority)
+            event_type = event.get('type', 'CASH_EXCHANGE')
+            priority = self.detection_types.get(event_type, {}).get('priority', 99)
+            
             clip_ranges.append({
                 'start_frame': start_frame,
                 'end_frame': end_frame,
                 'start_time': start_frame / fps,
                 'end_time': end_frame / fps,
-                'p1_id': trans['p1_id'],
-                'p2_id': trans['p2_id'],
-                'hand_type': trans.get('hand_type', 'N/A'),
-                'transactions': [trans]  # Track which transactions are in this clip
+                'type': event_type,
+                'priority': priority,
+                'p1_id': event.get('p1_id'),
+                'p2_id': event.get('p2_id'),
+                'hand_type': event.get('hand_type', 'N/A'),
+                'confidence': event.get('confidence'),
+                'description': event.get('description'),
+                'events': [event]  # Track which events are in this clip
             })
         
-        # Sort by start frame
-        clip_ranges.sort(key=lambda x: x['start_frame'])
+        # Sort by priority first, then start frame
+        clip_ranges.sort(key=lambda x: (x['priority'], x['start_frame']))
         
         # Merge overlapping ranges
         merged = []
@@ -244,10 +290,14 @@ class TransactionClipExtractor:
             overlap_threshold = int(self.MERGE_THRESHOLD * fps)
             
             if clip['start_frame'] <= current['end_frame'] + overlap_threshold:
-                # Merge: extend current clip
+                # Merge: extend current clip and keep highest priority
                 current['end_frame'] = max(current['end_frame'], clip['end_frame'])
                 current['end_time'] = current['end_frame'] / fps
-                current['transactions'].extend(clip['transactions'])
+                current['events'].extend(clip['events'])
+                # Keep highest priority (lower number)
+                if clip['priority'] < current['priority']:
+                    current['type'] = clip['type']
+                    current['priority'] = clip['priority']
                 print(f"  🔗 Merging overlapping clips: {current['start_time']:.1f}s - {current['end_time']:.1f}s")
             else:
                 # No overlap: save current and start new
@@ -259,9 +309,9 @@ class TransactionClipExtractor:
         print(f"  ✅ Merged {len(clip_ranges)} detections into {len(merged)} clips")
         return merged
     
-    def extract_clips(self, video_path, transactions, fps, output_folder, progress_callback=None):
-        """Extract video clips around transactions (merging overlapping ones)"""
-        cap = cv2.VideoCapture(video_path)
+    def extract_clips(self, annotated_video_path, events, fps, output_folder, progress_callback=None):
+        """Extract video clips from pre-annotated video (FAST - no re-detection!)"""
+        cap = cv2.VideoCapture(annotated_video_path)
         if not cap.isOpened():
             return []
         
@@ -269,7 +319,7 @@ class TransactionClipExtractor:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         # Merge overlapping clips first
-        merged_clips = self._merge_overlapping_clips(transactions, fps)
+        merged_clips = self._merge_overlapping_clips(events, fps)
         
         clips = []
         
@@ -280,20 +330,26 @@ class TransactionClipExtractor:
             end_time = clip_info['end_time']
             
             # Create output path
-            video_name = Path(video_path).stem
+            video_name = Path(annotated_video_path).stem.replace('_annotated_temp', '')
+            event_type = clip_info.get('type', 'CASH_EXCHANGE')
+            label = self.detection_types.get(event_type, {}).get('label', event_type)
             
-            # If multiple transactions merged, show range
-            if len(clip_info['transactions']) > 1:
-                clip_name = f"{video_name}_transaction_{idx+1}_merged_{len(clip_info['transactions'])}txns_{int(start_time)}s.mp4"
+            # Generate filename based on event type and content
+            if event_type == 'CASH_EXCHANGE' and clip_info.get('p1_id'):
+                clip_name = f"{video_name}_{event_type}_P{clip_info['p1_id']}_P{clip_info['p2_id']}_{int(start_time)}s.mp4"
             else:
-                trans = clip_info['transactions'][0]
-                clip_name = f"{video_name}_transaction_{idx+1}_P{trans['p1_id']}_P{trans['p2_id']}_{int(start_time)}s.mp4"
+                clip_name = f"{video_name}_{event_type}_{int(start_time)}s.mp4"
             
             clip_path = os.path.join(output_folder, clip_name)
             
-            # Extract clip
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Extract clip from annotated video with browser-compatible codec
+            fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec for browser compatibility
             out = cv2.VideoWriter(clip_path, fourcc, fps, (width, height))
+            
+            # Fallback to mp4v if avc1 fails
+            if not out.isOpened():
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(clip_path, fourcc, fps, (width, height))
             
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             
@@ -302,6 +358,8 @@ class TransactionClipExtractor:
                 ret, frame = cap.read()
                 if not ret:
                     break
+                
+                # Frame is already annotated - just write it!
                 out.write(frame)
                 frames_written += 1
             
@@ -313,18 +371,23 @@ class TransactionClipExtractor:
                 'start_time': round(start_time, 2),
                 'end_time': round(end_time, 2),
                 'duration': round(end_time - start_time, 2),
-                'p1_id': clip_info['p1_id'],
-                'p2_id': clip_info['p2_id'],
-                'hand_type': clip_info['hand_type'],
+                'type': event_type,
+                'label': label,
+                'priority': clip_info.get('priority', 99),
+                'p1_id': clip_info.get('p1_id'),
+                'p2_id': clip_info.get('p2_id'),
+                'hand_type': clip_info.get('hand_type', 'N/A'),
+                'confidence': clip_info.get('confidence'),
+                'description': clip_info.get('description'),
                 'frames': frames_written,
-                'merged_count': len(clip_info['transactions'])  # How many transactions merged
+                'merged_count': len(clip_info['events'])  # How many events merged
             })
             
             if progress_callback:
                 progress_callback(int((idx + 1) / len(merged_clips) * 100))
             
-            merge_info = f" (merged {len(clip_info['transactions'])} detections)" if len(clip_info['transactions']) > 1 else ""
-            print(f"  📎 Clip {idx+1}: {clip_name} ({frames_written} frames){merge_info}")
+            merge_info = f" (merged {len(clip_info['events'])} detections)" if len(clip_info['events']) > 1 else ""
+            print(f"  📎 Clip {idx+1}: {label} - {clip_name} ({frames_written} frames){merge_info}")
         
         cap.release()
         return clips
@@ -332,6 +395,7 @@ class TransactionClipExtractor:
 
 def process_video(job_id, video_path, video_filename):
     """Process video in background thread"""
+    annotated_video_path = None
     try:
         processing_status[job_id] = {
             'status': 'processing',
@@ -344,13 +408,13 @@ def process_video(job_id, video_path, video_filename):
         # Create extractor with full config
         extractor = TransactionClipExtractor(APP_CONFIG)
         
-        # Detect transactions
+        # Detect transactions (creates annotated video)
         processing_status[job_id]['stage'] = 'Detecting transactions...'
         
         def detection_progress(progress):
             processing_status[job_id]['progress'] = progress // 2  # First 50%
         
-        transactions, fps = extractor.detect_transactions(video_path, detection_progress)
+        transactions, fps, annotated_video_path = extractor.detect_transactions(video_path, detection_progress)
         
         processing_status[job_id]['stage'] = f'Found {len(transactions)} transaction(s). Extracting clips...'
         processing_status[job_id]['transactions_count'] = len(transactions)
@@ -360,16 +424,19 @@ def process_video(job_id, video_path, video_filename):
             processing_status[job_id]['progress'] = 100
             processing_status[job_id]['clips'] = []
             processing_status[job_id]['message'] = 'No transactions detected'
+            # Clean up annotated video
+            if annotated_video_path and os.path.exists(annotated_video_path):
+                os.remove(annotated_video_path)
             return
         
-        # Extract clips
+        # Extract clips from annotated video (FAST!)
         output_folder = os.path.join(app.config['OUTPUT_FOLDER'], job_id)
         Path(output_folder).mkdir(exist_ok=True)
         
         def extraction_progress(progress):
             processing_status[job_id]['progress'] = 50 + (progress // 2)  # Last 50%
         
-        clips = extractor.extract_clips(video_path, transactions, fps, output_folder, extraction_progress)
+        clips = extractor.extract_clips(annotated_video_path, transactions, fps, output_folder, extraction_progress)
         
         processing_status[job_id]['status'] = 'completed'
         processing_status[job_id]['progress'] = 100
@@ -383,6 +450,15 @@ def process_video(job_id, video_path, video_filename):
         processing_status[job_id]['error'] = str(e)
         processing_status[job_id]['progress'] = 0
         print(f"❌ Job {job_id} error: {e}")
+    
+    finally:
+        # Always clean up temporary annotated video
+        if annotated_video_path and os.path.exists(annotated_video_path):
+            try:
+                os.remove(annotated_video_path)
+                print(f"🧹 Cleaned up temporary annotated video")
+            except:
+                pass
 
 
 @app.route('/')

@@ -8,7 +8,7 @@ from app import app
 import json
 
 # Load config
-with open('config.json', 'r') as f:
+with open('config.json', 'r', encoding='utf-8') as f:
     config = json.load(f)
 
 max_size_mb = config.get('MAX_FILE_SIZE_MB', 2048)

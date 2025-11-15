@@ -3,6 +3,7 @@
 *.avi
 *.mkv
 *.mov
+*_annotated_temp.mp4
 
 # Flask uploads and outputs
 uploads/

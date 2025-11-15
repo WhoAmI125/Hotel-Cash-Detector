@@ -85,54 +85,100 @@
       <div class="bg-white rounded-lg shadow-md p-6">
         <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center">
           <i class="fas fa-film text-blue-600 mr-3"></i>
-          Extracted Transaction Clips
+          감지된 이벤트 클립
         </h3>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           {% for clip in status.clips %}
-            <div class="bg-gray-50 rounded-lg p-4 border border-gray-200 hover:shadow-md transition-shadow">
+            {% set event_type = clip.type | default('CASH_EXCHANGE') %}
+            {% if event_type == 'VIOLENCE' %}
+              {% set icon = 'hand-fist' %}
+              {% set color = 'red' %}
+              {% set bg_color = 'bg-red-50' %}
+              {% set border_color = 'border-red-300' %}
+              {% set badge_color = 'bg-red-100 text-red-800' %}
+              {% set priority_label = '긴급' %}
+            {% elif event_type == 'FIRE' %}
+              {% set icon = 'fire' %}
+              {% set color = 'orange' %}
+              {% set bg_color = 'bg-orange-50' %}
+              {% set border_color = 'border-orange-300' %}
+              {% set badge_color = 'bg-orange-100 text-orange-800' %}
+              {% set priority_label = '높음' %}
+            {% else %}
+              {% set icon = 'money-bill-wave' %}
+              {% set color = 'green' %}
+              {% set bg_color = 'bg-green-50' %}
+              {% set border_color = 'border-green-300' %}
+              {% set badge_color = 'bg-green-100 text-green-800' %}
+              {% set priority_label = '일반' %}
+            {% endif %}
+            
+            <div class="{{ bg_color }} rounded-lg p-4 border-2 {{ border_color }} hover:shadow-lg transition-shadow">
               <div class="flex items-start justify-between mb-3">
-                <div>
+                <div class="flex-1">
                   <h4 class="font-semibold text-gray-800 text-lg mb-1">
-                    <i class="fas fa-money-bill-wave text-green-600 mr-2"></i>
-                    Transaction {{ loop.index }}
+                    <i class="fas fa-{{ icon }} text-{{ color }}-600 mr-2"></i>
+                    {{ clip.label | default('현금 거래') }} {{ loop.index }}
                   </h4>
+                  
+                  {% if clip.p1_id and clip.p2_id %}
                   <p class="text-sm text-gray-600">
                     <i class="fas fa-users mr-1"></i>
                     Person {{ clip.p1_id }} ↔ Person {{ clip.p2_id }} ({{ clip.hand_type }})
                   </p>
+                  {% elif clip.description %}
+                  <p class="text-sm text-gray-600">
+                    <i class="fas fa-info-circle mr-1"></i>
+                    {{ clip.description }}
+                  </p>
+                  {% endif %}
+                  
                   <p class="text-sm text-gray-600">
                     <i class="far fa-clock mr-1"></i>
-                    {{ clip.start_time }}s - {{ clip.end_time }}s
+                    시간: {{ clip.start_time }}s - {{ clip.end_time }}s
                   </p>
                   <p class="text-sm text-gray-600">
                     <i class="fas fa-stopwatch mr-1"></i>
-                    Duration: {{ clip.duration }}s ({{ clip.frames }} frames)
+                    길이: {{ clip.duration }}s ({{ clip.frames }} 프레임)
                   </p>
+                  
+                  {% if clip.confidence %}
+                  <p class="text-sm text-gray-600">
+                    <i class="fas fa-chart-line mr-1"></i>
+                    신뢰도: {{ (clip.confidence * 100) | int }}%
+                  </p>
+                  {% endif %}
+                  
                   {% if clip.merged_count and clip.merged_count > 1 %}
                   <p class="text-xs text-blue-600 mt-1">
                     <i class="fas fa-layer-group mr-1"></i>
-                    {{ clip.merged_count }} detections merged
+                    {{ clip.merged_count }}개 감지 병합됨
                   </p>
                   {% endif %}
                 </div>
                 <div class="flex flex-col gap-1">
-                  <span class="bg-green-100 text-green-800 text-xs font-semibold px-2 py-1 rounded">
-                    Detected
+                  <span class="{{ badge_color }} text-xs font-semibold px-2 py-1 rounded">
+                    {{ priority_label }}
                   </span>
                   {% if clip.merged_count and clip.merged_count > 1 %}
                   <span class="bg-blue-100 text-blue-600 text-xs font-semibold px-2 py-1 rounded">
-                    Merged
+                    병합
                   </span>
                   {% endif %}
                 </div>
               </div>
 
               <div class="flex gap-2">
+                <button onclick="viewVideo('{{ job_id }}', '{{ clip.filename }}')" 
+                   class="flex-1 bg-purple-600 hover:bg-purple-700 text-white text-center px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                  <i class="fas fa-play mr-2"></i>
+                  미리보기
+                </button>
                 <a href="/download/{{ job_id }}/{{ clip.filename }}" 
                    class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-center px-4 py-2 rounded-lg text-sm font-medium transition-colors">
                   <i class="fas fa-download mr-2"></i>
-                  Download Clip
+                  다운로드
                 </a>
               </div>
 
@@ -148,7 +194,7 @@
         <div class="mt-6 pt-6 border-t border-gray-200">
           <button onclick="downloadAll()" class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors">
             <i class="fas fa-download mr-2"></i>
-            Download All Clips ({{ status.clips|length }})
+            모든 클립 다운로드 ({{ status.clips|length }})
           </button>
         </div>
       </div>
@@ -198,7 +244,119 @@
     {% endif %}
   </div>
 
+  <!-- Video Player Modal -->
+  <div id="videoModal" class="hidden fixed inset-0 bg-black bg-opacity-75 z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-lg shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden">
+      <!-- Modal Header -->
+      <div class="bg-slate-800 text-white px-6 py-4 flex items-center justify-between">
+        <h3 class="text-xl font-semibold flex items-center">
+          <i class="fas fa-play-circle mr-3"></i>
+          <span id="modalTitle">비디오 미리보기</span>
+        </h3>
+        <button onclick="closeVideoModal()" class="text-white hover:text-gray-300 transition-colors">
+          <i class="fas fa-times text-2xl"></i>
+        </button>
+      </div>
+      
+      <!-- Modal Body -->
+      <div class="p-6 bg-gray-900">
+        <video id="videoPlayer" class="w-full rounded-lg shadow-lg" controls autoplay preload="auto" playsinline>
+          <source id="videoSource" src="" type="video/mp4">
+          Your browser does not support the video tag.
+        </video>
+        <div id="videoError" class="hidden mt-3 text-center text-red-400">
+          <i class="fas fa-exclamation-triangle mr-2"></i>
+          비디오를 로드할 수 없습니다. 다운로드를 시도하세요.
+        </div>
+      </div>
+      
+      <!-- Modal Footer -->
+      <div class="bg-gray-50 px-6 py-4 flex justify-between items-center">
+        <p class="text-sm text-gray-600">
+          <i class="fas fa-info-circle mr-2"></i>
+          자동으로 주석이 달린 감지 비디오
+        </p>
+        <button onclick="closeVideoModal()" class="bg-slate-600 hover:bg-slate-700 text-white px-6 py-2 rounded-lg transition-colors">
+          <i class="fas fa-times mr-2"></i>
+          닫기
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
+    function viewVideo(jobId, filename) {
+      const modal = document.getElementById('videoModal');
+      const videoPlayer = document.getElementById('videoPlayer');
+      const videoSource = document.getElementById('videoSource');
+      const modalTitle = document.getElementById('modalTitle');
+      const videoError = document.getElementById('videoError');
+      
+      // Hide error message
+      videoError.classList.add('hidden');
+      
+      // Set video source
+      const videoUrl = `/download/${jobId}/${filename}`;
+      videoSource.src = videoUrl;
+      videoPlayer.src = videoUrl;  // Also set on video element directly
+      modalTitle.textContent = filename;
+      
+      // Add error handler
+      videoPlayer.onerror = function() {
+        console.error('Video load error:', videoPlayer.error);
+        videoError.classList.remove('hidden');
+      };
+      
+      // Add loaded handler
+      videoPlayer.onloadedmetadata = function() {
+        console.log('Video loaded successfully');
+      };
+      
+      // Load and show modal
+      videoPlayer.load();
+      modal.classList.remove('hidden');
+      
+      // Try to play after a short delay
+      setTimeout(() => {
+        videoPlayer.play().catch(err => {
+          console.log('Autoplay prevented:', err);
+        });
+      }, 100);
+      
+      // Prevent body scroll
+      document.body.style.overflow = 'hidden';
+    }
+    
+    function closeVideoModal() {
+      const modal = document.getElementById('videoModal');
+      const videoPlayer = document.getElementById('videoPlayer');
+      
+      // Stop video
+      videoPlayer.pause();
+      videoPlayer.currentTime = 0;
+      videoPlayer.src = '';  // Clear source
+      
+      // Hide modal
+      modal.classList.add('hidden');
+      
+      // Restore body scroll
+      document.body.style.overflow = 'auto';
+    }
+    
+    // Close modal on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeVideoModal();
+      }
+    });
+    
+    // Close modal on background click
+    document.getElementById('videoModal').addEventListener('click', (e) => {
+      if (e.target.id === 'videoModal') {
+        closeVideoModal();
+      }
+    });
+  
     function downloadAll() {
       {% for clip in status.clips %}
         setTimeout(() => {

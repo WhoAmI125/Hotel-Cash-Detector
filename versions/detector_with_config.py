@@ -41,7 +41,7 @@ class SimpleHandTouchConfig:
         """Load configuration from JSON file"""
         config = cls()
         try:
-            with open(json_path, 'r') as f:
+            with open(json_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 
             # Update configuration with JSON values
