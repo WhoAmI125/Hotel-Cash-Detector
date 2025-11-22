@@ -275,7 +275,7 @@ class TransactionClipExtractor:
             
             try:
                 # Run detection (no need to save output_frame since we don't store temp video)
-                _, detections_dict = self.detector.detect_all(frame, fps=fps)
+                _, detections_dict = self.detector.detect_all(frame, fps=fps, frame_number=frame_num)
             except Exception as e:
                 print(f"⚠️  Error processing frame {frame_num}: {e}")
                 continue
@@ -449,8 +449,21 @@ class TransactionClipExtractor:
         merged.append(current)
         return merged
     
+    def _calculate_bbox_area(self, bbox):
+        """Calculate area of bounding box in pixels"""
+        if not bbox or len(bbox) < 4:
+            return 0
+        x1, y1, x2, y2 = bbox[:4]
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        return int(width * height)
+    
     def _merge_overlapping_clips(self, events, fps):
-        """Merge events that would create overlapping clips"""
+        """Merge events that would create overlapping clips
+        
+        Set MERGE_CLIPS_WITHIN_SECONDS to 0 in config.json to disable merging
+        and export ALL detections as separate clips.
+        """
         if not events:
             return []
         
@@ -482,6 +495,11 @@ class TransactionClipExtractor:
         # Sort by priority first, then start frame
         clip_ranges.sort(key=lambda x: (x['priority'], x['start_frame']))
         
+        # If MERGE_THRESHOLD is 0, return all clips separately (NO merging)
+        if self.MERGE_THRESHOLD <= 0:
+            print(f"  📌 NO MERGING: Exporting all {len(clip_ranges)} detections as separate clips")
+            return clip_ranges
+        
         # Merge overlapping ranges
         merged = []
         current = clip_ranges[0]
@@ -495,11 +513,15 @@ class TransactionClipExtractor:
                 current['end_frame'] = max(current['end_frame'], clip['end_frame'])
                 current['end_time'] = current['end_frame'] / fps
                 current['events'].extend(clip['events'])
-                # Keep highest priority (lower number)
+                # Keep highest priority (lower number = higher priority)
+                # Violence (priority 1) will override Cash (priority 3)
                 if clip['priority'] < current['priority']:
+                    old_type = current['type']
                     current['type'] = clip['type']
                     current['priority'] = clip['priority']
-                print(f"  🔗 Merging overlapping clips: {current['start_time']:.1f}s - {current['end_time']:.1f}s")
+                    if old_type == 'CASH_EXCHANGE' and clip['type'] == 'VIOLENCE':
+                        print(f"  🚨 VIOLENCE OVERRIDE: Cash detection reclassified as VIOLENCE (priority 1 > 3)")
+                print(f"  🔗 Merging clips: {current['start_time']:.1f}s - {current['end_time']:.1f}s ({current['type']})")
             else:
                 # No overlap: save current and start new
                 merged.append(current)
@@ -618,6 +640,19 @@ class TransactionClipExtractor:
                         "card_indicator": "< 0.4 (gray/white)"
                     }
                 },
+                "violence_interpretation": {
+                    "detection_methods": {
+                        "velocity": "Fast hand movement (>15 px/frame for 15fps video) indicates attack",
+                        "yolo_model": "YOLO detects: fight, violence, weapon, knife, gun, assault",
+                        "duration": "Violence must be continuous for >= 1 second"
+                    },
+                    "confidence_levels": {
+                        "high": ">= 0.7 (70%) - Strong violence signal",
+                        "medium": "0.5-0.7 - Possible violence",
+                        "low": "< 0.5 - Weak signal, likely false positive"
+                    },
+                    "weapon_detection": ["knife", "gun", "blade", "pistol", "rifle", "sword", "bat", "weapon"]
+                },
                 "frames_with_detections": [],
                 "frame_count": 0
             }
@@ -635,7 +670,7 @@ class TransactionClipExtractor:
                 
                 # Re-run detector on this frame to get annotations
                 try:
-                    annotated_frame, detections_dict = self.detector.detect_all(frame, fps=fps)
+                    annotated_frame, detections_dict = self.detector.detect_all(frame, fps=fps, frame_number=frame_idx)
                 except Exception as e:
                     print(f"  ⚠️  Detection error at frame {frame_idx}: {e}")
                     annotated_frame = frame  # Use original frame if detection fails
@@ -685,14 +720,49 @@ class TransactionClipExtractor:
                             if 'velocities' in det:
                                 detection_entry["velocities"] = det['velocities']
                             
+                            # Add violence-specific debugging if flagged as violence
+                            if det.get('is_violence', False):
+                                violence_scores = scores if isinstance(scores, dict) else {}
+                                detection_entry["violence_detection"] = {
+                                    "flagged_as_violence": True,
+                                    "detection_method": violence_scores.get('method', 'Unknown'),
+                                    "violence_confidence": round(violence_scores.get('violence_confidence', 0), 3),
+                                    "velocity_px_per_frame": round(violence_scores.get('velocity', 0), 2),
+                                    "velocity_threshold": 100,
+                                    "reason": f"Fast movement detected (velocity > threshold)",
+                                    "person_1_velocity": round(det.get('velocities', {}).get('cashier', 0), 3),
+                                    "person_2_velocity": round(det.get('velocities', {}).get('customer', 0), 3)
+                                }
+                            
                             frame_data["detections"].append(detection_entry)
                     
-                    elif det_type in ['VIOLENCE', 'FIRE']:
+                    elif det_type == 'VIOLENCE':
                         for det in detections:
                             detection_entry = {
-                                "type": det_type,
+                                "type": "VIOLENCE",
                                 "confidence": round(det.get('confidence', 0), 3),
-                                "description": det.get('description', det_type),
+                                "description": det.get('description', 'VIOLENCE'),
+                                "class_name": det.get('class_name', 'violence'),
+                                "bbox": det.get('bbox', []),
+                                "detection_method": "YOLO Model",
+                                "debug_info": {
+                                    "model_class": det.get('class_name', 'unknown'),
+                                    "confidence_percent": round(det.get('confidence', 0) * 100, 1),
+                                    "bbox_area_px": self._calculate_bbox_area(det.get('bbox', [])),
+                                    "threshold_used": 0.7,
+                                    "min_duration_required": "1 second",
+                                    "weapon_keywords": ["knife", "gun", "blade", "pistol", "rifle", "weapon"],
+                                    "violence_keywords": ["fight", "violence", "assault", "punch", "kick", "attack"]
+                                }
+                            }
+                            frame_data["detections"].append(detection_entry)
+                    
+                    elif det_type == 'FIRE':
+                        for det in detections:
+                            detection_entry = {
+                                "type": "FIRE",
+                                "confidence": round(det.get('confidence', 0), 3),
+                                "description": det.get('description', 'FIRE'),
                                 "bbox": det.get('bbox', [])
                             }
                             frame_data["detections"].append(detection_entry)

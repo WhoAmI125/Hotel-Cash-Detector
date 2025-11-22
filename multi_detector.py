@@ -51,10 +51,15 @@ class MultiEventDetector:
         
         print(f"🎯 Active detectors: {', '.join(self.detectors.keys())}")
     
-    def detect_all(self, frame, fps=None):
+    def detect_all(self, frame, fps=None, frame_number=None):
         """
         Run all enabled detectors on a single frame (PARALLEL)
         Returns: (annotated_frame, detections_dict)
+        
+        Args:
+            frame: Input frame
+            fps: Frames per second (for violence detection timing)
+            frame_number: Actual frame number from video (for tracking)
         """
         detections = {}
         output_frame = frame.copy()
@@ -62,7 +67,7 @@ class MultiEventDetector:
         # Run all detectors (they're already optimized individually)
         for det_type, detector in self.detectors.items():
             if det_type == 'CASH_EXCHANGE':
-                output_frame, cash_events = detector.detect_hand_touches(output_frame)
+                output_frame, cash_events = detector.detect_hand_touches(output_frame, frame_number=frame_number)
                 if cash_events:
                     detections['CASH_EXCHANGE'] = cash_events
             
@@ -120,7 +125,12 @@ class ViolenceDetector:
         
         # Violence-related class names (from Musawer1214/Fight-Violence-detection-yolov8)
         # Model classes: 0=NoViolence, 1=Violence/Fight
-        self.violence_classes = ['violence', 'fight', 'fighting', 'assault', 'punch', 'kick', 'weapon']
+        # Added weapon keywords for YOLO object detection models
+        self.violence_classes = [
+            'violence', 'fight', 'fighting', 'assault', 'punch', 'kick', 'hit',
+            'weapon', 'knife', 'gun', 'blade', 'pistol', 'rifle', 'sword', 'bat',
+            'attack', 'stab', 'shoot', 'threat'
+        ]
         self.violence_class_id = 1  # Class ID for Violence/Fight
         
         # Track continuous violence detection (for 1 second requirement)

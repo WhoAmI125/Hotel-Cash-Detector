@@ -47,7 +47,7 @@ class SimpleHandTouchConfig:
     
     # Violence Detection
     DETECT_HAND_VELOCITY = True  # Enable velocity-based violence detection
-    VIOLENCE_VELOCITY_THRESHOLD = 200  # Pixels/frame threshold for violence (higher = less sensitive)
+    VIOLENCE_VELOCITY_THRESHOLD = 15  # Pixels/frame threshold for violence (adjusted for 15 fps video)
     
     # Camera calibration settings
     CAMERA_NAME = "default"
@@ -153,14 +153,21 @@ class SimpleHandTouchDetector:
         self.hand_history = {}  # {person_id: {'left': [(x,y, frame)], 'right': [(x,y, frame)]}}
         self.max_history_frames = 5  # Track last 5 frames for velocity calculation
     
-    def detect_hand_touches(self, frame):
+    def detect_hand_touches(self, frame, frame_number=None):
         """
         STEP 1: Detect people and their hands
         STEP 2: Identify ALL cashiers (anyone in CASHIER_ZONE) and customers
         STEP 3: Check EVERY cashier with EVERY customer for hand touches
         STEP 4: Draw transactions
+        
+        Args:
+            frame: Input frame to process
+            frame_number: Actual frame number from video (for accurate tracking)
         """
         self.stats['frames'] += 1
+        
+        # Use provided frame number or fall back to internal counter
+        actual_frame_num = frame_number if frame_number is not None else self.stats['frames']
         
         # STEP 1: Detect people and their poses
         people = []
@@ -329,7 +336,7 @@ class SimpleHandTouchDetector:
                             c_velocity, c_angle = self._calculate_hand_velocity(cashier['id'], c_hand, c_hand_name, self.stats['frames'])
                             n_velocity, n_angle = self._calculate_hand_velocity(customer['id'], n_hand, n_hand_name, self.stats['frames'])
                             
-                            # === VIOLENCE DETECTION (3 METHODS) ===
+                            # === VIOLENCE DETECTION (ENHANCED FOR REPEATED ATTACKS) ===
                             # ONLY detect violence from CUSTOMER, not cashier
                             is_violent = False
                             violence_type = None
@@ -339,12 +346,19 @@ class SimpleHandTouchDetector:
                             # Only check CUSTOMER velocity for violence (not cashier)
                             if self.config.DETECT_HAND_VELOCITY:
                                 violence_threshold = self.config.VIOLENCE_VELOCITY_THRESHOLD
-                                # Only customer fast movement = violence
+                                # Lower threshold for repeated attacks (10 px/frame for 15 fps video)
+                                # Catches: punching, slapping, repeated aggressive movements toward cashier
                                 if n_velocity > violence_threshold:
                                     is_violent = True
                                     violence_type = f"🚨 Violence (Customer Attack - {n_velocity:.0f} px/f)"
                                     violence_confidence = min(n_velocity / violence_threshold, 1.0)
-                                    violence_method = "Velocity"
+                                    violence_method = "Velocity (Fast Movement)"
+                                # Also detect medium-fast repeated movements (10-15 px/frame for 15 fps)
+                                elif n_velocity > 10 and c_velocity < 5:  # Customer fast, cashier slow = attack
+                                    is_violent = True
+                                    violence_type = f"🚨 Violence (Repeated Attack - {n_velocity:.0f} px/f)"
+                                    violence_confidence = min(n_velocity / violence_threshold, 0.8)
+                                    violence_method = "Velocity (Repeated Movement)"
                             
                             # If violent movement detected, mark as violence instead of cash
                             if is_violent:
@@ -377,7 +391,7 @@ class SimpleHandTouchDetector:
                                 }
                                 continue  # Skip material analysis
                             
-                            # Check for cash/card with 3-Phase Handover Zone Analysis
+                            # For CONFIRMED detection: Check for cash/card with 3-Phase Handover Zone Analysis
                             material_detected, material_type, material_bbox, analysis_scores = self._analyze_handover_zone(frame, c_hand, n_hand, draw_debug=True)
                             
                             # Track ALL hand-close events to Possible folder (for debugging)
@@ -388,16 +402,13 @@ class SimpleHandTouchDetector:
                                 color = analysis_scores.get('chromatic', 0)
                                 internal_conf = analysis_scores.get('confidence', 0)
                                 
-                                # Print message based on detection result
-                                if material_detected:
-                                    print(f"  ✅ Material detected: {material_type} (conf:{internal_conf:.2f}) [G:{geom:.2f} L:{glare:.2f} C:{color:.2f}]")
-                                else:
-                                    print(f"  ⚠️  Hands close ({dist:.0f}px) but NO MATERIAL - P{cashier['id']}↔P{customer['id']} ({hand_type}) [G:{geom:.2f} L:{glare:.2f} C:{color:.2f}]")
+                                # Removed per-frame prints to clean up console
+                                # Only show confirmed transactions below
                                 
                                 # Track ALL hand-close events (detected OR not) for debugging
                                 try:
                                     self._track_possible_detection(
-                                        frame_num=self.stats['frames'],
+                                        frame_num=actual_frame_num,
                                         p1_id=cashier['id'],
                                         p2_id=customer['id'],
                                         hand_type=hand_type,
@@ -455,46 +466,40 @@ class SimpleHandTouchDetector:
             
             self.transaction_history[pair_key] += 1
             
-            if self.config.DEBUG_MODE and self.transaction_history[pair_key] == 1:
-                print(f"  🔄 NEW PAIR: P{trans['p1_id']}↔P{trans['p2_id']} started ({dist:.0f}px)")
+            # Removed NEW PAIR print to reduce console noise
+            pass
             
-            # Confirm transaction if it lasts MIN_TRANSACTION_FRAMES or more
-            if self.transaction_history[pair_key] >= self.config.MIN_TRANSACTION_FRAMES:
+            # VIOLENCE: Confirm immediately (no temporal filtering needed)
+            # CASH: Require MIN_TRANSACTION_FRAMES for temporal filtering
+            is_violence = trans.get('is_violence', False)
+            min_frames_required = 1 if is_violence else self.config.MIN_TRANSACTION_FRAMES
+            
+            # Confirm transaction if it lasts required frames or more
+            if self.transaction_history[pair_key] >= min_frames_required:
                 trans['confirmed'] = True
                 trans['duration'] = self.transaction_history[pair_key]
                 confirmed_transactions.append(trans)
                 
                 # Count as confirmed transaction (only once when first confirmed)
-                if self.transaction_history[pair_key] == self.config.MIN_TRANSACTION_FRAMES:
+                if self.transaction_history[pair_key] == min_frames_required:
                     self.stats['confirmed_transactions'] += 1
-                    if self.config.DEBUG_MODE:
-                        print(f"  ✅ CONFIRMED: P{trans['p1_id']}↔P{trans['p2_id']} ({trans['distance']:.0f}px, {trans['duration']} frames)")
                     
-                    # Debug: Print material detection details (Cash or Card)
+                    # Different messages for violence vs cash
+                    if is_violence:
+                        if self.config.DEBUG_MODE:
+                            print(f"  🚨 VIOLENCE CONFIRMED: P{trans['p1_id']}↔P{trans['p2_id']} ({trans['distance']:.0f}px, IMMEDIATE)")
+                    else:
+                        if self.config.DEBUG_MODE:
+                            print(f"  ✅ CONFIRMED: P{trans['p1_id']}↔P{trans['p2_id']} ({trans['distance']:.0f}px, {trans['duration']} frames)")
+                    
+                    # Track material type for statistics (no verbose prints)
                     if self.config.DETECT_CASH_COLOR and trans.get('cash_detected'):
                         self.stats['cash_detections'] += 1
-                        
-                        # Track material type (Cash or Card)
                         material_type = trans.get('cash_type', 'Unknown')
                         if material_type not in self.stats['cash_types']:
                             self.stats['cash_types'][material_type] = 0
                         self.stats['cash_types'][material_type] += 1
-                        
-                        # Get analysis scores
-                        scores = trans.get('analysis_scores', {})
-                        
-                        print(f"\n  🎯 MATERIAL DETECTED!")
-                        print(f"     Type: {material_type}")
-                        print(f"     📊 Analysis Scores:")
-                        print(f"        - Geometric (shape): {scores.get('geometric', 0):.2f}")
-                        print(f"        - Photometric (glare): {scores.get('photometric', 0):.2f}")
-                        print(f"        - Chromatic (color): {scores.get('chromatic', 0):.2f}")
-                        if trans.get('cash_bbox'):
-                            cx1, cy1, cx2, cy2 = trans['cash_bbox']
-                            print(f"     📍 Location: ({cx1}, {cy1}) to ({cx2}, {cy2})")
-                            print(f"     📏 Size: {cx2-cx1}x{cy2-cy1} pixels")
-                        print(f"     👥 Between: P{trans['p1_id']} ↔ P{trans['p2_id']} ({trans['hand_type']})")
-                        print()
+                        # Removed location/size prints for cleaner console
             else:
                 trans['confirmed'] = False
                 trans['duration'] = self.transaction_history[pair_key]
@@ -690,17 +695,27 @@ class SimpleHandTouchDetector:
             confidence = (photometric_score + geometric_score + (1 - chromatic_score)) / 3
             decision_reason = "High glare + Low color + Rectangular shape"
         
-        # Strong Cash signal: High color + Low glare + Detected bill type
-        elif chromatic_score > 0.7 and photometric_score < 0.5 and detected_bill:
+        # Strong Cash signal: High color + Very low glare + Detected bill type
+        # REJECT if glare > 0.15 (glass/shiny objects reflect light)
+        elif chromatic_score >= 0.65 and chromatic_score < 0.90 and photometric_score < 0.15 and detected_bill:
             material_type = f"💵 {detected_bill}"
-            confidence = chromatic_score
-            decision_reason = f"High color ({chromatic_score:.2f}) + Low glare + Bill detected"
+            confidence = min(chromatic_score + 0.1, 0.85)  # Boost confidence if bill detected
+            decision_reason = f"Bill detected: {detected_bill} (color={chromatic_score:.2f}, glare={photometric_score:.2f})"
         
-        # Weak Cash signal: High color only (more strict now)
-        elif chromatic_score > 0.75 and detected_bill:
+        # Medium Cash signal: Moderate color + Very low glare + Detected bill
+        # REJECT if too colorful (> 0.88) or has glare (objects, glass)
+        elif chromatic_score >= 0.60 and chromatic_score < 0.88 and photometric_score < 0.12 and detected_bill and geometric_score < 0.6:
             material_type = f"💵 {detected_bill}"
-            confidence = chromatic_score * 0.75  # Lower confidence
-            decision_reason = f"High color only ({chromatic_score:.2f})"
+            confidence = chromatic_score * 0.85  # Medium-high confidence
+            decision_reason = f"Bill color detected: {detected_bill} (color={chromatic_score:.2f})"
+        
+        # Fallback - Generic cash (colorful + matte, but no specific bill color detected)
+        # IMPORTANT: Reject glass/cups (they reflect light, photometric > 0.15)
+        # IMPORTANT: Reject very colorful objects without bill patterns (chromatic > 0.85 = likely object)
+        elif chromatic_score >= 0.65 and chromatic_score < 0.85 and photometric_score < 0.15 and geometric_score < 0.5:
+            material_type = "💵 Cash (Generic)"
+            confidence = chromatic_score * 0.75  # Medium confidence
+            decision_reason = f"Generic colorful object (color={chromatic_score:.2f}, no bill pattern)"
         
         # Nothing detected or ambiguous
         else:
@@ -855,6 +870,7 @@ class SimpleHandTouchDetector:
         # Also check for specific Korean Won bill colors with ENHANCEMENTS
         detected_bill = None
         max_pixels = 0
+        bills_detected_count = 0  # Count how many different bills detected
         color_analysis = {}  # Store detailed analysis for each bill
         
         for bill_type, color_info in self.config.CASH_COLORS.items():
@@ -874,6 +890,10 @@ class SimpleHandTouchDetector:
                 mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)   # Remove noise
                 pixel_count = np.count_nonzero(mask)  # Recount after cleanup
             
+            # Count bills that passed threshold
+            if pixel_count > self.config.CASH_COLOR_THRESHOLD:
+                bills_detected_count += 1
+            
             # Store analysis for this bill type
             color_analysis[color_info['name']] = {
                 'pixel_count': pixel_count,
@@ -890,8 +910,12 @@ class SimpleHandTouchDetector:
                 detected_bill = color_info['name']
         
         # Boost chromatic score if specific bill detected
+        # BONUS: Extra boost if multiple bills detected (more confidence it's real money)
         if detected_bill and max_pixels > self.config.CASH_COLOR_THRESHOLD:
-            chromatic_score = max(chromatic_score, 0.7)
+            base_boost = 0.7
+            # Extra +0.05 for each additional bill type detected (max +0.15)
+            multi_bill_bonus = min((bills_detected_count - 1) * 0.05, 0.15)
+            chromatic_score = max(chromatic_score, base_boost + multi_bill_bonus)
         
         return chromatic_score, detected_bill, color_analysis
     

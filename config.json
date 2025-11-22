@@ -13,12 +13,16 @@
   "DRAW_CONNECTIONS": true,
   "DEBUG_MODE": true,
   
-  "DETECT_CASH_COLOR": false,
+  "_comment_cash_detection": "=== CASH DETECTION SETTINGS ===",
+  "_comment_rules": "Detection Rules: 1) Strong Cash: color>0.7 + glare<0.5 + bill detected, 2) Generic Cash: color>=0.65 + glare<0.3 + bent<0.5, 3) Card: glare>0.5 + color<0.4 + rect>0.6",
+  "DETECT_CASH_COLOR": true,
   "CASH_COLOR_THRESHOLD": 50,
-  "CASH_DETECTION_CONFIDENCE": 0.30,
+  "CASH_DETECTION_CONFIDENCE": 0.3,
   "MAX_CASH_TRANSACTION_SECONDS": 3,
   "DETECT_HAND_VELOCITY": true,
-  "VIOLENCE_VELOCITY_THRESHOLD": 100,
+  "VIOLENCE_VELOCITY_THRESHOLD": 15,
+  
+  "_comment_bill_colors": "=== KOREAN WON BILL COLORS (HSV ranges) ===",
   "CASH_COLORS": {
     "50000_won": {
       "lower": [15, 120, 120],
@@ -41,16 +45,22 @@
       "name": "1,000원 (Blue)"
     }
   },
+  
+  "_comment_clip_settings": "=== CLIP EXTRACTION SETTINGS ===",
+  "_comment_merge": "Set MERGE_CLIPS_WITHIN_SECONDS to merge detections (30s = merge all within 30 seconds, 0 = no merging)",
   "SECONDS_BEFORE_TRANSACTION": 2,
   "SECONDS_AFTER_TRANSACTION": 2,
-  "MERGE_CLIPS_WITHIN_SECONDS": 0.5,
+  "MERGE_CLIPS_WITHIN_SECONDS": 30,
   "MAX_VIDEOS_PER_UPLOAD": 5,
   "MAX_FILE_SIZE_MB": 2048,
   "ALLOWED_EXTENSIONS": ["mp4", "avi", "mov", "mkv"],
   
-    "FRAME_SKIP": 1,
-    
-    "DETECTION_TYPES": {
+  "_comment_performance": "=== PERFORMANCE SETTINGS ===",
+  "_comment_frame_skip": "FRAME_SKIP=1 processes every frame (no skipping) for smooth video output",
+  "FRAME_SKIP": 1,
+  
+  "_comment_detection_types": "=== MULTI-EVENT DETECTION (Priority: 1=Highest) ===",
+  "DETECTION_TYPES": {
         "CASH_EXCHANGE": {
             "enabled": true,
             "priority": 3,
@@ -65,7 +75,7 @@
       "color": [0, 0, 255],
       "icon": "hand-fist",
       "confidence_threshold": 0.7,
-      "min_duration_seconds": 1.0
+      "min_duration_seconds": 0.5
     },
     "FIRE": {
       "enabled": true,
@@ -77,6 +87,8 @@
     }
   },
   
+  "_comment_models": "=== YOLO MODEL PATHS ===",
+  "_comment_violence_model": "Violence model includes weapon detection: knife, gun, blade, pistol, rifle, etc.",
   "VIOLENCE_MODEL": "models/yolo_small_weights.pt",
   "FIRE_MODEL": "models/yolov8n.pt"
 }
