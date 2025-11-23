@@ -366,8 +366,31 @@ class TransactionClipExtractor:
                                 'description': detection.get('description', det_type)
                             }
                         else:
-                            current_events[det_type]['end_frame'] = frame_num
-                            current_events[det_type]['end_time'] = frame_num / fps
+                            # For VIOLENCE: if gap > 3 seconds, create NEW event (don't extend)
+                            # This prevents merging separate violent incidents
+                            if det_type == 'VIOLENCE':
+                                last_frame = current_events[det_type]['end_frame']
+                                gap_seconds = (frame_num - last_frame) / fps
+                                if gap_seconds > 3.0:  # 3 second gap = new incident
+                                    # Save current event and start new one
+                                    all_events.append(current_events[det_type])
+                                    current_events[det_type] = {
+                                        'type': det_type,
+                                        'start_frame': frame_num,
+                                        'end_frame': frame_num,
+                                        'start_time': frame_num / fps,
+                                        'end_time': frame_num / fps,
+                                        'confidence': detection.get('confidence', 0.8),
+                                        'description': detection.get('description', det_type)
+                                    }
+                                else:
+                                    # Continue existing event
+                                    current_events[det_type]['end_frame'] = frame_num
+                                    current_events[det_type]['end_time'] = frame_num / fps
+                            else:
+                                # Non-violence: just extend normally
+                                current_events[det_type]['end_frame'] = frame_num
+                                current_events[det_type]['end_time'] = frame_num / fps
             
             # Check for ended events (no detection in this frame)
             ended_events = []
@@ -384,6 +407,29 @@ class TransactionClipExtractor:
             all_events.append(event)
         
         cap.release()
+        
+        # ✅ EXTRACT VIOLENCE EVENTS from hand-touch possible detections
+        # These are high-velocity hand movements detected by cash_detector
+        print(f"\n🔍 Checking {len(cash_detector.possible_events)} possible detections for violence...")
+        violence_from_hands = 0
+        for poss_event in cash_detector.possible_events:
+            # Check if this possible event was flagged as violence
+            if poss_event.get('is_violence', False) or poss_event.get('violence_detected', False):
+                # Convert to final event format
+                violence_event = {
+                    'type': 'VIOLENCE',
+                    'start_frame': poss_event['start_frame'],
+                    'end_frame': poss_event['end_frame'],
+                    'start_time': poss_event['start_frame'] / fps,
+                    'end_time': poss_event['end_frame'] / fps,
+                    'confidence': 1.0,
+                    'description': poss_event.get('description', 'Violence (hand velocity)')
+                }
+                all_events.append(violence_event)
+                violence_from_hands += 1
+        
+        if violence_from_hands > 0:
+            print(f"  ✅ Promoted {violence_from_hands} violence event(s) from hand-touch detections")
         
         # Merge close events
         merged_events = self._merge_close_events(all_events, fps)
@@ -423,7 +469,11 @@ class TransactionClipExtractor:
         return merged_events, fps, temp_annotated_path
     
     def _merge_close_events(self, events, fps):
-        """Merge events that are close together (same type)"""
+        """Merge events that are close together (same type)
+        
+        Violence events are NOT merged - each violent incident is a separate clip.
+        Cash events within MERGE_THRESHOLD are merged (same transaction).
+        """
         if not events:
             return []
         
@@ -434,9 +484,15 @@ class TransactionClipExtractor:
         current = events[0].copy()
         
         for event in events[1:]:
-            # If same type and within 1 second, merge them
+            # NEVER merge violence events - each attack is separate
+            if event.get('type') == 'VIOLENCE' or current.get('type') == 'VIOLENCE':
+                merged.append(current)
+                current = event.copy()
+                continue
+            
+            # For non-violence: merge if same type and within threshold
             if (event.get('type') == current.get('type') and 
-                event['start_time'] - current['end_time'] <= 1.0):
+                event['start_time'] - current['end_time'] <= self.MERGE_THRESHOLD):
                 current['end_frame'] = event['end_frame']
                 current['end_time'] = event['end_time']
                 # For cash, merge keys if different
@@ -642,7 +698,7 @@ class TransactionClipExtractor:
                 },
                 "violence_interpretation": {
                     "detection_methods": {
-                        "velocity": "Fast hand movement (>15 px/frame for 15fps video) indicates attack",
+                        "velocity": "Fast hand movement (>25 px/f) + high acceleration (>20 px/f²) indicates attack",
                         "yolo_model": "YOLO detects: fight, violence, weapon, knife, gun, assault",
                         "duration": "Violence must be continuous for >= 1 second"
                     },

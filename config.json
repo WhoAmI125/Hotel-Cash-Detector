@@ -18,9 +18,11 @@
   "DETECT_CASH_COLOR": true,
   "CASH_COLOR_THRESHOLD": 50,
   "CASH_DETECTION_CONFIDENCE": 0.3,
-  "MAX_CASH_TRANSACTION_SECONDS": 3,
+  "MAX_CASH_TRANSACTION_SECONDS": 10,
+  "_comment_max_cash": "Normal cash exchanges can take 5-8 seconds (counting, change, etc). Only transactions >10s are suspicious.",
   "DETECT_HAND_VELOCITY": true,
-  "VIOLENCE_VELOCITY_THRESHOLD": 15,
+  "VIOLENCE_VELOCITY_THRESHOLD": 25,
+  "_comment_violence": "Violence requires BOTH high velocity (>25 px/f) AND high acceleration (>20 px/f²) - cash exchanges have velocity 10-20 with acceleration <15, violence has velocity >25 with acceleration >20",
   
   "_comment_bill_colors": "=== KOREAN WON BILL COLORS (HSV ranges) ===",
   "CASH_COLORS": {

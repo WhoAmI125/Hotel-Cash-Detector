@@ -47,7 +47,7 @@ class SimpleHandTouchConfig:
     
     # Violence Detection
     DETECT_HAND_VELOCITY = True  # Enable velocity-based violence detection
-    VIOLENCE_VELOCITY_THRESHOLD = 15  # Pixels/frame threshold for violence (adjusted for 15 fps video)
+    VIOLENCE_VELOCITY_THRESHOLD = 25  # Pixels/frame threshold for violence (adjusted for 15 fps video)
     
     # Camera calibration settings
     CAMERA_NAME = "default"
@@ -150,7 +150,7 @@ class SimpleHandTouchDetector:
         self.persistence_frames = self.config.CASHIER_PERSISTENCE_FRAMES
         
         # Hand velocity tracking for violence detection
-        self.hand_history = {}  # {person_id: {'left': [(x,y, frame)], 'right': [(x,y, frame)]}}
+        self.hand_history = {}  # {person_id: {'left': [(x,y, frame, velocity)], 'right': [(x,y, frame, velocity)]}}
         self.max_history_frames = 5  # Track last 5 frames for velocity calculation
     
     def detect_hand_touches(self, frame, frame_number=None):
@@ -343,22 +343,36 @@ class SimpleHandTouchDetector:
                             violence_confidence = 0
                             violence_method = None
                             
-                            # Only check CUSTOMER velocity for violence (not cashier)
+                            # Calculate acceleration (change in velocity) for jerk detection
+                            # Violence = sudden jerky movements (high acceleration)
+                            # Cash exchange = smooth movements (low acceleration)
+                            n_acceleration = 0
+                            if customer['id'] in self.hand_history:
+                                hand_side = 'right' if n_hand == 'R' else 'left'
+                                history = self.hand_history[customer['id']].get(hand_side, [])
+                                if len(history) >= 2:
+                                    # Get last two velocities to calculate acceleration
+                                    prev_velocity = history[-1][3] if len(history[-1]) > 3 else 0
+                                    n_acceleration = abs(n_velocity - prev_velocity)
+                            
+                            # Only check CUSTOMER velocity + acceleration for violence (not cashier)
                             if self.config.DETECT_HAND_VELOCITY:
                                 violence_threshold = self.config.VIOLENCE_VELOCITY_THRESHOLD
-                                # Lower threshold for repeated attacks (10 px/frame for 15 fps video)
-                                # Catches: punching, slapping, repeated aggressive movements toward cashier
-                                if n_velocity > violence_threshold:
+                                # NEW RULE: Require BOTH high velocity AND high acceleration for violence
+                                # This prevents smooth cash exchanges from being flagged as violence
+                                # Cash handover: velocity 10-20 px/f, acceleration < 15 px/f² (smooth) ✓
+                                # Violent punch: velocity > 25 px/f, acceleration > 20 px/f² (jerky) ✗
+                                if n_velocity > 25 and n_acceleration > 20:  # Sudden violent jerk
                                     is_violent = True
-                                    violence_type = f"🚨 Violence (Customer Attack - {n_velocity:.0f} px/f)"
+                                    violence_type = f"🚨 Violence (Sudden Attack - {n_velocity:.0f} px/f, acc:{n_acceleration:.1f})"
                                     violence_confidence = min(n_velocity / violence_threshold, 1.0)
-                                    violence_method = "Velocity (Fast Movement)"
-                                # Also detect medium-fast repeated movements (10-15 px/frame for 15 fps)
-                                elif n_velocity > 10 and c_velocity < 5:  # Customer fast, cashier slow = attack
+                                    violence_method = "Velocity + Acceleration (Jerky Movement)"
+                                # Also detect very fast repeated attacks (lower acceleration but very high speed)
+                                elif n_velocity > 40 and n_acceleration > 15 and c_velocity < 10:  # Very fast repeated attacks
                                     is_violent = True
-                                    violence_type = f"🚨 Violence (Repeated Attack - {n_velocity:.0f} px/f)"
-                                    violence_confidence = min(n_velocity / violence_threshold, 0.8)
-                                    violence_method = "Velocity (Repeated Movement)"
+                                    violence_type = f"🚨 Violence (Fast Repeated Attack - {n_velocity:.0f} px/f, acc:{n_acceleration:.1f})"
+                                    violence_confidence = min(n_velocity / violence_threshold, 0.9)
+                                    violence_method = "Velocity + Acceleration (Fast Repeated Attack)"
                             
                             # If violent movement detected, mark as violence instead of cash
                             if is_violent:
@@ -419,7 +433,9 @@ class SimpleHandTouchDetector:
                                         material_detected=material_detected,
                                         material_type=material_type,
                                         confidence=internal_conf,
-                                        annotated_frame=frame  # Pass frame for buffering
+                                        annotated_frame=frame,  # Pass frame for buffering
+                                        velocities={'p1': c_velocity, 'p2': n_velocity},
+                                        accelerations={'p1': 0, 'p2': n_acceleration}  # NEW: Track velocity changes
                                     )
                                 except Exception as e:
                                     print(f"  ❌ Error tracking possible detection: {e}")
@@ -697,25 +713,28 @@ class SimpleHandTouchDetector:
         
         # Strong Cash signal: High color + Very low glare + Detected bill type
         # REJECT if glare > 0.15 (glass/shiny objects reflect light)
-        elif chromatic_score >= 0.65 and chromatic_score < 0.90 and photometric_score < 0.15 and detected_bill:
+        # REJECT if geometric = 0 (no object detected)
+        elif chromatic_score >= 0.65 and chromatic_score < 0.90 and photometric_score < 0.15 and detected_bill and geometric_score > 0.001:
             material_type = f"💵 {detected_bill}"
             confidence = min(chromatic_score + 0.1, 0.85)  # Boost confidence if bill detected
-            decision_reason = f"Bill detected: {detected_bill} (color={chromatic_score:.2f}, glare={photometric_score:.2f})"
+            decision_reason = f"Bill detected: {detected_bill} (color={chromatic_score:.2f}, glare={photometric_score:.2f}, geom={geometric_score:.2f})"
         
         # Medium Cash signal: Moderate color + Very low glare + Detected bill
         # REJECT if too colorful (> 0.88) or has glare (objects, glass)
-        elif chromatic_score >= 0.60 and chromatic_score < 0.88 and photometric_score < 0.12 and detected_bill and geometric_score < 0.6:
+        # REJECT if geometric = 0 (no object detected) BUT accept if < 0.6 (bent/folded bills)
+        elif chromatic_score >= 0.60 and chromatic_score < 0.88 and photometric_score < 0.12 and detected_bill and geometric_score > 0.001 and geometric_score < 0.6:
             material_type = f"💵 {detected_bill}"
             confidence = chromatic_score * 0.85  # Medium-high confidence
-            decision_reason = f"Bill color detected: {detected_bill} (color={chromatic_score:.2f})"
+            decision_reason = f"Bill color detected: {detected_bill} (color={chromatic_score:.2f}, geom={geometric_score:.2f})"
         
         # Fallback - Generic cash (colorful + matte, but no specific bill color detected)
         # IMPORTANT: Reject glass/cups (they reflect light, photometric > 0.15)
         # IMPORTANT: Reject very colorful objects without bill patterns (chromatic > 0.85 = likely object)
-        elif chromatic_score >= 0.65 and chromatic_score < 0.85 and photometric_score < 0.15 and geometric_score < 0.5:
+        # IMPORTANT: Reject no-object cases (geometric = 0)
+        elif chromatic_score >= 0.65 and chromatic_score < 0.85 and photometric_score < 0.15 and geometric_score > 0.001 and geometric_score < 0.5:
             material_type = "💵 Cash (Generic)"
             confidence = chromatic_score * 0.75  # Medium confidence
-            decision_reason = f"Generic colorful object (color={chromatic_score:.2f}, no bill pattern)"
+            decision_reason = f"Generic colorful object (color={chromatic_score:.2f}, geom={geometric_score:.2f}, no bill pattern)"
         
         # Nothing detected or ambiguous
         else:
@@ -979,10 +998,12 @@ class SimpleHandTouchDetector:
         return self._analyze_handover_zone(frame, hand1, hand2, draw_debug)
     
     def _track_possible_detection(self, frame_num, p1_id, p2_id, hand_type, distance, scores, p1_hand, p2_hand, 
-                                  material_detected=False, material_type=None, confidence=0.0, annotated_frame=None):
+                                  material_detected=False, material_type=None, confidence=0.0, annotated_frame=None,
+                                  velocities=None, accelerations=None):
         """
         Track ALL hand-close events (material detected OR not) for debugging
         Buffers annotated frames during detection for accurate clips
+        NOW INCLUDES: Velocity and acceleration data for behavior analysis
         """
         # Check if this continues the current event
         pair_key = f"{p1_id}-{p2_id}"
@@ -1008,7 +1029,11 @@ class SimpleHandTouchDetector:
                 'avg_scores': scores.copy(),
                 'material_detected': material_detected,
                 'material_type': material_type,
-                'confidence': confidence
+                'confidence': confidence,
+                'velocities': velocities or {'p1': 0, 'p2': 0},
+                'accelerations': accelerations or {'p1': 0, 'p2': 0},
+                'max_velocity': max((velocities or {'p1': 0, 'p2': 0}).values()),
+                'max_acceleration': max((accelerations or {'p1': 0, 'p2': 0}).values())
             }
             
             # Initialize frame buffer for this event
@@ -1039,6 +1064,12 @@ class SimpleHandTouchDetector:
                 # Update to higher confidence detection
                 event['material_type'] = material_type
                 event['confidence'] = confidence
+            
+            # Update velocity/acceleration tracking (track maximums for behavior analysis)
+            if velocities:
+                event['max_velocity'] = max(event.get('max_velocity', 0), max(velocities.values()))
+            if accelerations:
+                event['max_acceleration'] = max(event.get('max_acceleration', 0), max(accelerations.values()))
             
             # Buffer this frame too
             if annotated_frame is not None:
@@ -1071,7 +1102,11 @@ class SimpleHandTouchDetector:
                 'avg_scores': scores.copy(),
                 'material_detected': material_detected,
                 'material_type': material_type,
-                'confidence': confidence
+                'confidence': confidence,
+                'velocities': velocities or {'p1': 0, 'p2': 0},
+                'accelerations': accelerations or {'p1': 0, 'p2': 0},
+                'max_velocity': max((velocities or {'p1': 0, 'p2': 0}).values()),
+                'max_acceleration': max((accelerations or {'p1': 0, 'p2': 0}).values())
             }
             
             # Initialize frame buffer for this new event
@@ -1204,6 +1239,22 @@ class SimpleHandTouchDetector:
                         'likely_scenario': self._interpret_behavior(event, fps)
                     },
                     
+                    # NEW: Movement analysis (velocity + acceleration)
+                    'movement_analysis': {
+                        'max_velocity_px_per_frame': round(event.get('max_velocity', 0), 1),
+                        'max_acceleration_px_per_frame2': round(event.get('max_acceleration', 0), 1),
+                        'movement_type': self._classify_movement(event.get('max_velocity', 0), event.get('max_acceleration', 0)),
+                        'violence_thresholds': {
+                            'sudden_attack': 'velocity > 25 px/f AND acceleration > 20 px/f²',
+                            'fast_repeated': 'velocity > 40 px/f AND acceleration > 15 px/f²',
+                            'normal_cash': 'velocity 10-20 px/f AND acceleration < 15 px/f²'
+                        },
+                        'current_classification': self._get_movement_classification(
+                            event.get('max_velocity', 0), 
+                            event.get('max_acceleration', 0)
+                        )
+                    },
+                    
                     'status': '✅ DETECTED' if event.get('material_detected', False) else '⚠️ NOT DETECTED (hands close, no material)'
                 }
                 json_data['events'].append(event_data)
@@ -1252,6 +1303,50 @@ class SimpleHandTouchDetector:
         
         # Clear buffer (no longer needed since we re-process)
         self.possible_frame_buffer.clear()
+    
+    def _classify_movement(self, velocity, acceleration):
+        """
+        Classify hand movement type based on velocity and acceleration
+        Used for debugging JSON output
+        """
+        if velocity > 40 and acceleration > 15:
+            return "Very Fast & Jerky (possible repeated attack)"
+        elif velocity > 25 and acceleration > 20:
+            return "Fast & Jerky (possible sudden attack)"
+        elif velocity > 20 and acceleration < 15:
+            return "Fast & Smooth (normal cash exchange)"
+        elif velocity > 10 and acceleration < 10:
+            return "Moderate & Smooth (gentle handover)"
+        elif velocity < 10:
+            return "Slow (very gentle or stationary)"
+        else:
+            return "Mixed (review video)"
+    
+    def _get_movement_classification(self, velocity, acceleration):
+        """
+        Get detailed classification with threshold comparison
+        Used for debugging JSON output
+        """
+        classifications = []
+        
+        # Violence thresholds
+        if velocity > 25 and acceleration > 20:
+            classifications.append("⚠️ MEETS VIOLENCE THRESHOLD (sudden attack)")
+        elif velocity > 40 and acceleration > 15:
+            classifications.append("⚠️ MEETS VIOLENCE THRESHOLD (fast repeated)")
+        
+        # Normal cash range
+        if 10 <= velocity <= 20 and acceleration < 15:
+            classifications.append("✅ Normal cash exchange range")
+        
+        # Very gentle
+        if velocity < 10:
+            classifications.append("✅ Very gentle movement")
+        
+        if not classifications:
+            classifications.append("❓ Outside known patterns")
+        
+        return " | ".join(classifications)
     
     def _interpret_behavior(self, event, fps):
         """
@@ -1600,8 +1695,22 @@ class SimpleHandTouchDetector:
         if person_id not in self.hand_history:
             self.hand_history[person_id] = {'left': [], 'right': []}
         
-        # Add current hand position to history
-        self.hand_history[person_id][hand_type].append((hand_pos[0], hand_pos[1], current_frame))
+        # Calculate current velocity first (before adding to history)
+        history = self.hand_history[person_id][hand_type]
+        current_velocity = 0
+        
+        if len(history) >= 1:
+            # Calculate velocity from last position
+            last_entry = history[-1]
+            x1, y1, frame1 = last_entry[0], last_entry[1], last_entry[2]
+            frame_diff = current_frame - frame1
+            
+            if frame_diff > 0:
+                distance = math.sqrt((hand_pos[0] - x1)**2 + (hand_pos[1] - y1)**2)
+                current_velocity = distance / frame_diff
+        
+        # Add current hand position to history WITH velocity
+        self.hand_history[person_id][hand_type].append((hand_pos[0], hand_pos[1], current_frame, current_velocity))
         
         # Keep only recent history (last N frames)
         if len(self.hand_history[person_id][hand_type]) > self.max_history_frames:
@@ -1613,8 +1722,10 @@ class SimpleHandTouchDetector:
             return 0, None
         
         # Calculate velocity between first and last position
-        (x1, y1, frame1) = history[0]
-        (x2, y2, frame2) = history[-1]
+        first_entry = history[0]
+        last_entry = history[-1]
+        x1, y1, frame1 = first_entry[0], first_entry[1], first_entry[2]
+        x2, y2, frame2 = last_entry[0], last_entry[1], last_entry[2]
         
         frame_diff = frame2 - frame1
         if frame_diff == 0:
