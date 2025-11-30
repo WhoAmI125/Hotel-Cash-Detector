@@ -43,7 +43,7 @@ class DetectionConfig:
     # Fire detection - STRICT settings to reduce false positives
     FIRE_CONFIDENCE = 0.3  # Higher threshold
     MIN_FIRE_FRAMES = 4   # Need more consecutive frames
-    MIN_FIRE_AREA = 50   # Larger minimum area
+    MIN_FIRE_AREA = 100   # Larger minimum area
     
     # Cashier zone (will be loaded from camera config)
     DEFAULT_CASHIER_ZONE = [0, 280, 900, 400]  # x, y, width, height

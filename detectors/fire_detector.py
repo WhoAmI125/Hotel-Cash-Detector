@@ -188,9 +188,17 @@ class FireDetector(BaseDetector):
         # Compare current mask with previous masks
         total_diff = 0
         count = 0
+        current_h, current_w = current_mask.shape[:2]
+        
         for prev_mask in list(self.fire_mask_history)[-5:]:
+            # Ensure masks are the same size before comparing
+            prev_h, prev_w = prev_mask.shape[:2]
+            if prev_h != current_h or prev_w != current_w:
+                # Resize previous mask to match current
+                prev_mask = cv2.resize(prev_mask, (current_w, current_h))
+            
             diff = cv2.absdiff(current_mask, prev_mask)
-            total_diff += np.sum(diff) / (current_mask.shape[0] * current_mask.shape[1])
+            total_diff += np.sum(diff) / (current_h * current_w)
             count += 1
         
         # Normalize flickering score
