@@ -1,0 +1,219 @@
+{% extends 'cctv/base.html' %}
+
+{% block title %}{{ branch.name }} - 지점 상세{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div class="page-header">
+        <div>
+            <p class="eyebrow">관리 · 지점관리</p>
+            <h1>{{ branch.name }}</h1>
+        </div>
+        <a href="{% url 'cctv:manage_branches' %}" class="ghost-button small">목록으로</a>
+    </div>
+
+    <!-- Branch Info -->
+    <div class="table">
+        <div class="table-head">
+            <span>항목</span>
+            <span>정보</span>
+        </div>
+        <div class="table-body">
+            <div class="table-row events" style="grid-template-columns: 1fr 2fr;">
+                <span class="branch-name">지점명</span>
+                <span>{{ branch.name }}</span>
+            </div>
+            <div class="table-row events" style="grid-template-columns: 1fr 2fr;">
+                <span class="branch-name">지역</span>
+                <span>{{ branch.region.name }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Accounts Section -->
+    <div class="panel" style="margin-top: 16px;">
+        <div class="page-header" style="margin-bottom: 12px;">
+            <div>
+                <p class="eyebrow">관리자 계정</p>
+                <h2>관리자 추가</h2>
+            </div>
+        </div>
+        <form class="manage-inline" style="align-items: flex-end; margin-bottom: 12px;" onsubmit="addAccount(event)">
+            <div class="filter-group">
+                <label>이름</label>
+                <input type="text" id="newAccountName" placeholder="관리자명" required>
+            </div>
+            <div class="filter-group">
+                <label>이메일</label>
+                <input type="email" id="newAccountEmail" placeholder="이메일" required>
+            </div>
+            <div class="filter-group">
+                <label>역할</label>
+                <select id="newAccountRole">
+                    <option value="manager">지점장</option>
+                    <option value="staff">스태프</option>
+                    <option value="control">관제</option>
+                </select>
+            </div>
+            <button type="submit" class="primary-button">계정 추가</button>
+        </form>
+        <div class="table">
+            <div class="table-head">
+                <span>이름</span>
+                <span>이메일</span>
+                <span>역할</span>
+            </div>
+            <div class="table-body" id="accountsTableBody">
+                {% for account in accounts %}
+                <div class="table-row events" style="grid-template-columns: 1fr 1.6fr 0.8fr;">
+                    <span class="branch-name">{{ account.name }}</span>
+                    <span>{{ account.email }}</span>
+                    <span>{{ account.get_role_display }}</span>
+                </div>
+                {% empty %}
+                <div class="table-row empty-row">
+                    <span class="empty-text">등록된 계정이 없습니다.</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- CCTV Mapping Section -->
+    <div class="panel" style="margin-top: 16px;">
+        <div class="page-header" style="margin-bottom: 12px;">
+            <div>
+                <p class="eyebrow">CCTV 매핑</p>
+                <h2>카메라 연결</h2>
+            </div>
+        </div>
+        <form class="manage-inline" style="align-items: flex-end; margin-bottom: 12px;" onsubmit="addCamera(event)">
+            <div class="filter-group">
+                <label>카메라 ID</label>
+                <input type="text" id="newMappingCameraId" placeholder="CAM-001" required>
+            </div>
+            <div class="filter-group">
+                <label>카메라 이름</label>
+                <input type="text" id="newMappingCameraName" placeholder="로비 카메라 1" required>
+            </div>
+            <div class="filter-group">
+                <label>설치 위치</label>
+                <input type="text" id="newMappingLocation" placeholder="예: 출입구, 카운터">
+            </div>
+            <div class="filter-group">
+                <label>RTSP URL</label>
+                <input type="text" id="newMappingRtsp" placeholder="rtsp://..." required>
+            </div>
+            <button type="submit" class="ghost-button small">매핑 추가</button>
+        </form>
+        <div class="table">
+            <div class="table-head">
+                <span>카메라</span>
+                <span>이름</span>
+                <span>위치</span>
+                <span>상태</span>
+            </div>
+            <div class="table-body" id="camerasTableBody">
+                {% for camera in cameras %}
+                <div class="table-row events" style="grid-template-columns: 0.8fr 1fr 1fr 0.6fr;">
+                    <span class="branch-name">{{ camera.camera_id }}</span>
+                    <span>{{ camera.name }}</span>
+                    <span>{{ camera.location|default:"-" }}</span>
+                    <span class="status-pill status-{% if camera.status == 'online' %}online{% else %}offline{% endif %}">
+                        {{ camera.get_status_display }}
+                    </span>
+                </div>
+                {% empty %}
+                <div class="table-row empty-row">
+                    <span class="empty-text">등록된 카메라가 없습니다.</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const branchId = {{ branch.id }};
+
+function addAccount(event) {
+    event.preventDefault();
+    
+    const data = {
+        name: document.getElementById('newAccountName').value,
+        email: document.getElementById('newAccountEmail').value,
+        role: document.getElementById('newAccountRole').value
+    };
+    
+    fetch(`/api/branches/${branchId}/accounts/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            alert('계정이 추가되었습니다.');
+            window.location.reload();
+        } else {
+            alert('오류: ' + (result.error || '계정 추가 실패'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('계정 추가 중 오류가 발생했습니다.');
+    });
+}
+
+function addCamera(event) {
+    event.preventDefault();
+    
+    const data = {
+        camera_id: document.getElementById('newMappingCameraId').value,
+        name: document.getElementById('newMappingCameraName').value,
+        location: document.getElementById('newMappingLocation').value,
+        rtsp_url: document.getElementById('newMappingRtsp').value
+    };
+    
+    fetch(`/api/branches/${branchId}/cameras/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            alert('카메라가 추가되었습니다.');
+            window.location.reload();
+        } else {
+            alert('오류: ' + (result.error || '카메라 추가 실패'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('카메라 추가 중 오류가 발생했습니다.');
+    });
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+</script>
+{% endblock %}

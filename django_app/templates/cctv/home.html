@@ -1,0 +1,73 @@
+{% extends 'cctv/base.html' %}
+
+{% block title %}홈 - Hotel CCTV Monitoring{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div class="page-header">
+        <div>
+            <p class="eyebrow">대시보드</p>
+            <h1>금일 이벤트 현황</h1>
+        </div>
+    </div>
+    <div class="table home-table" id="homeTable">
+        <div class="table-head">
+            <span>지점</span>
+            <span>이벤트 건수</span>
+            <span>상태</span>
+        </div>
+        <div class="table-body" id="homeTableBody">
+            <!-- Data loaded via JavaScript -->
+            <div class="loading-row">데이터를 불러오는 중...</div>
+        </div>
+    </div>
+    <div class="legend">
+        <div class="legend-item">
+            <span class="status-pill status-confirmed">확인완료</span>
+            <span>이벤트 건수가 모두 확인되었습니다.</span>
+        </div>
+        <div class="legend-item">
+            <span class="status-pill status-pending">미확인</span>
+            <span>어떤 이벤트도 확인되지 않았습니다.</span>
+        </div>
+        <div class="legend-item">
+            <span class="status-pill status-review">확인중</span>
+            <span>일부 이벤트가 확인되고 있습니다.</span>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadHomeStats();
+});
+
+function loadHomeStats() {
+    fetch('/api/home-stats/')
+        .then(response => response.json())
+        .then(data => {
+            const tbody = document.getElementById('homeTableBody');
+            if (data.stats.length === 0) {
+                tbody.innerHTML = '<div class="table-row empty-row"><span class="empty-text">등록된 지점이 없습니다.</span></div>';
+                return;
+            }
+            
+            tbody.innerHTML = data.stats.map(row => `
+                <a href="/video/logs/?branch=${encodeURIComponent(row.branch)}" class="table-row clickable">
+                    <span class="branch-name">${row.branch}</span>
+                    <span class="event-count">${row.count}</span>
+                    <span class="status-col">
+                        <span class="status-pill status-${row.status === 'confirmed' ? 'confirmed' : row.status === 'pending' ? 'pending' : 'review'}">
+                            ${row.status === 'confirmed' ? '확인완료' : row.status === 'pending' ? '미확인' : '확인중'}
+                        </span>
+                    </span>
+                </a>
+            `).join('');
+        })
+        .catch(error => {
+            console.error('Error loading home stats:', error);
+            document.getElementById('homeTableBody').innerHTML = '<div class="table-row empty-row"><span class="empty-text">데이터 로드 실패</span></div>';
+        });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,180 @@
+{% extends 'cctv/base.html' %}
+
+{% block title %}리포트 - Hotel CCTV Monitoring{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div class="page-header">
+        <div>
+            <p class="eyebrow">기본 리포트</p>
+            <h1>리포트 대시보드</h1>
+        </div>
+    </div>
+
+    <form class="filters" style="margin-bottom: 12px;" method="get">
+        <div class="filter-group">
+            <label>지역</label>
+            <select name="region" id="reportRegion">
+                <option value="전체">전체</option>
+                {% for region in regions %}
+                <option value="{{ region.name }}">{{ region.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>지점명</label>
+            <input name="branch" id="reportBranch" placeholder="지점명 검색">
+        </div>
+        <button class="ghost-button small" type="submit">검색</button>
+    </form>
+
+    <!-- Metrics Cards -->
+    <div class="report-cards" id="metricsCards">
+        <div class="report-card">
+            <p class="eyebrow">이번 달 총 이벤트</p>
+            <h2 id="totalEvents">-</h2>
+        </div>
+        <div class="report-card">
+            <p class="eyebrow">평균 알람 대응 시간</p>
+            <h2>02분 35초</h2>
+        </div>
+        <div class="report-card">
+            <p class="eyebrow">오탐률</p>
+            <h2>3.2%</h2>
+        </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="report-lines">
+        <div class="report-box">
+            <h3>기간별 이벤트 발생 건수 · 일별</h3>
+            <div class="mini-line-chart" id="dailyChart">
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+                    <defs>
+                        <linearGradient id="lineFill" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="rgba(28,19,115,0.35)" />
+                            <stop offset="100%" stop-color="rgba(28,19,115,0.05)" />
+                        </linearGradient>
+                    </defs>
+                    <polyline id="dailyLine" fill="none" stroke="#1c1373" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
+                    <polygon id="dailyFill" fill="url(#lineFill)" opacity="0.35"></polygon>
+                </svg>
+            </div>
+        </div>
+        <div class="report-box">
+            <h3>이벤트 유형별 비율</h3>
+            <div class="report-pie-inline">
+                <div class="pie-chart pie-single" id="pieChart" style="width: 150px; height: 150px;"></div>
+                <div class="pie-legend-list" id="pieLegend"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Branch Summary Table -->
+    <div class="table" style="margin-top: 16px;">
+        <div class="table-head">
+            <span>지점</span>
+            <span>총 이벤트</span>
+            <span>평균 대응 시간</span>
+            <span>오탐률</span>
+        </div>
+        <div class="table-body" id="branchSummaryBody">
+            <div class="loading-row">데이터를 불러오는 중...</div>
+        </div>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+        <button class="ghost-button" onclick="downloadReport()">다운로드</button>
+    </div>
+</div>
+
+<style>
+.report-pie-inline {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 12px;
+}
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    loadReportStats();
+});
+
+function loadReportStats() {
+    fetch('/api/report-stats/')
+        .then(response => response.json())
+        .then(data => {
+            // Update total events
+            document.getElementById('totalEvents').textContent = data.monthly_events + '건';
+            
+            // Update daily chart
+            if (data.daily_data && data.daily_data.length > 0) {
+                updateDailyChart(data.daily_data);
+            }
+            
+            // Update pie chart
+            if (data.pie_data) {
+                updatePieChart(data.pie_data);
+            }
+            
+            // Update branch summary
+            if (data.branch_summary) {
+                updateBranchSummary(data.branch_summary);
+            }
+        })
+        .catch(error => {
+            console.error('Error loading report stats:', error);
+        });
+}
+
+function updateDailyChart(data) {
+    const maxY = Math.max(...data.map(d => d.y), 1);
+    const points = data.map((d, idx) => {
+        const x = (idx / Math.max(data.length - 1, 1)) * 100;
+        const y = 100 - (d.y / maxY) * 75 - 12;
+        return `${x},${y}`;
+    });
+    
+    document.getElementById('dailyLine').setAttribute('points', points.join(' '));
+    document.getElementById('dailyFill').setAttribute('points', points.join(' ') + ' 100,100 0,100');
+}
+
+function updatePieChart(data) {
+    const total = data.reduce((s, p) => s + p.value, 0) || 1;
+    let stops = [];
+    let startAngle = 0;
+    
+    data.forEach(p => {
+        const endAngle = startAngle + (p.value / 100) * 360;
+        stops.push(`${p.color} ${startAngle}deg ${endAngle}deg`);
+        startAngle = endAngle;
+    });
+    
+    document.getElementById('pieChart').style.background = `conic-gradient(${stops.join(', ')})`;
+    
+    document.getElementById('pieLegend').innerHTML = data.map(p => `
+        <div class="legend-item">
+            <span class="legend-dot" style="background: ${p.color}"></span>
+            ${p.label} (${p.value}%)
+        </div>
+    `).join('');
+}
+
+function updateBranchSummary(data) {
+    document.getElementById('branchSummaryBody').innerHTML = data.map(row => `
+        <div class="table-row events" style="grid-template-columns: 1.2fr 0.8fr 1fr 0.8fr;">
+            <span class="branch-name">${row.branch}</span>
+            <span>${row.total}</span>
+            <span>${row.avg}</span>
+            <span>${row.falseRate}</span>
+        </div>
+    `).join('') || '<div class="table-row empty-row"><span class="empty-text">데이터 없음</span></div>';
+}
+
+function downloadReport() {
+    alert('리포트 다운로드 기능은 준비 중입니다.');
+}
+</script>
+{% endblock %}

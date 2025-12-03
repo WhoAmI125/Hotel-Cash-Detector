@@ -1,0 +1,230 @@
+{% extends 'cctv/base.html' %}
+
+{% block title %}{{ branch.name }} 모니터링 - Hotel CCTV Monitoring{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div class="page-header">
+        <div>
+            <p class="eyebrow">실시간 모니터링</p>
+            <h1>{{ branch.name }} CCTV 피드</h1>
+        </div>
+        {% if user.is_admin %}
+        <a href="{% url 'cctv:monitor_all' %}" class="ghost-button small">이전 화면</a>
+        {% endif %}
+    </div>
+    
+    {% if user.is_admin %}
+    <div class="monitor-filters">
+        <div class="monitor-filter">
+            <label>지점 선택</label>
+            <select id="branchSelect" onchange="changeBranch(this.value)">
+                {% for b in branches %}
+                <option value="{{ b.id }}" {% if b.id == branch.id %}selected{% endif %}>{{ b.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="monitor-filter">
+            <label>카메라 검색</label>
+            <input id="cameraSearch" placeholder="카메라명 검색" oninput="filterCameras()">
+        </div>
+        <button class="ghost-button small" onclick="filterCameras()">검색</button>
+    </div>
+    {% endif %}
+    
+    <!-- Add Camera Button -->
+    <div class="add-camera-section" style="margin-bottom: 16px;">
+        <button class="primary-button" onclick="showAddCameraModal()">+ 카메라 추가</button>
+    </div>
+    
+    <div class="monitor-grid" id="cameraGrid">
+        {% for camera in cameras %}
+        <div class="monitor-card" data-camera-name="{{ camera.name }}">
+            <div class="monitor-header">
+                <h3>{{ camera.name }}</h3>
+                <span class="mono">{{ camera.camera_id }}</span>
+            </div>
+            <div class="monitor-video">
+                {% if camera.status == 'online' %}
+                <img src="{% url 'cctv:video_feed' camera.id %}" alt="Live Feed" style="width: 100%; height: 100%; object-fit: cover;">
+                {% else %}
+                <div class="video-placeholder">
+                    <span class="status-pill status-offline">{{ camera.get_status_display }}</span>
+                </div>
+                {% endif %}
+            </div>
+            <div class="monitor-footer">
+                <div class="viewer-meta">
+                    위치: {{ camera.location|default:"미설정" }}<br>
+                    <span class="mono">상태: {{ camera.get_status_display }}</span>
+                </div>
+                <button class="ghost-button small" onclick="showCameraDetail({{ camera.id }})">자세히 보기</button>
+            </div>
+        </div>
+        {% empty %}
+        <div class="empty-text">등록된 카메라가 없습니다. 카메라를 추가해주세요.</div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Add Camera Modal -->
+<div id="addCameraModal" class="modal-backdrop" style="display: none;" onclick="closeAddCameraModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h3>카메라 추가</h3>
+            <button class="ghost-button small" onclick="closeAddCameraModal()">닫기</button>
+        </div>
+        <div class="modal-body">
+            <form id="addCameraForm" onsubmit="addCamera(event)">
+                <div class="filter-group" style="margin-bottom: 16px;">
+                    <label>카메라 ID</label>
+                    <input type="text" id="newCameraId" placeholder="CAM-001" required>
+                </div>
+                <div class="filter-group" style="margin-bottom: 16px;">
+                    <label>카메라 이름</label>
+                    <input type="text" id="newCameraName" placeholder="로비 카메라 1" required>
+                </div>
+                <div class="filter-group" style="margin-bottom: 16px;">
+                    <label>설치 위치</label>
+                    <input type="text" id="newCameraLocation" placeholder="출입구, 카운터 등">
+                </div>
+                <div class="filter-group" style="margin-bottom: 16px;">
+                    <label>RTSP URL</label>
+                    <input type="text" id="newCameraRtsp" placeholder="rtsp://admin:password@192.168.1.100:554/stream" required>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button type="button" class="ghost-button small" onclick="closeAddCameraModal()">취소</button>
+                    <button type="submit" class="primary-button">추가</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Camera Detail Modal -->
+<div id="cameraDetailModal" class="modal-backdrop" style="display: none;" onclick="closeCameraDetail()">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 800px;">
+        <div class="modal-header">
+            <h3 id="cameraDetailTitle">카메라 상세</h3>
+            <button class="ghost-button small" onclick="closeCameraDetail()">닫기</button>
+        </div>
+        <div class="modal-body">
+            <div id="cameraDetailContent">
+                <div class="modal-video" id="cameraDetailVideo">
+                    라이브 피드
+                </div>
+                <div class="modal-meta" id="cameraDetailMeta">
+                    <span class="mono">LIVE</span>
+                    <span class="status-col">스트리밍 중</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const branchId = {{ branch.id }};
+
+function changeBranch(newBranchId) {
+    window.location.href = `/monitor/local/${newBranchId}/`;
+}
+
+function filterCameras() {
+    const search = document.getElementById('cameraSearch').value.toLowerCase();
+    const cards = document.querySelectorAll('.monitor-card');
+    
+    cards.forEach(card => {
+        const name = card.dataset.cameraName.toLowerCase();
+        card.style.display = name.includes(search) ? 'flex' : 'none';
+    });
+}
+
+function showAddCameraModal() {
+    document.getElementById('addCameraModal').style.display = 'flex';
+}
+
+function closeAddCameraModal() {
+    document.getElementById('addCameraModal').style.display = 'none';
+    document.getElementById('addCameraForm').reset();
+}
+
+function addCamera(event) {
+    event.preventDefault();
+    
+    const data = {
+        camera_id: document.getElementById('newCameraId').value,
+        name: document.getElementById('newCameraName').value,
+        location: document.getElementById('newCameraLocation').value,
+        rtsp_url: document.getElementById('newCameraRtsp').value
+    };
+    
+    fetch(`/api/branches/${branchId}/cameras/`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            alert('카메라가 추가되었습니다.');
+            window.location.reload();
+        } else {
+            alert('오류: ' + (result.error || '카메라 추가 실패'));
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('카메라 추가 중 오류가 발생했습니다.');
+    });
+}
+
+function showCameraDetail(cameraId) {
+    fetch(`/api/cameras/${cameraId}/`)
+        .then(response => response.json())
+        .then(camera => {
+            document.getElementById('cameraDetailTitle').textContent = `${camera.name} (${camera.camera_id})`;
+            
+            if (camera.status === 'online') {
+                document.getElementById('cameraDetailVideo').innerHTML = `
+                    <img src="/video-feed/${cameraId}/" alt="Live Feed" style="width: 100%; height: 100%; object-fit: contain;">
+                `;
+            } else {
+                document.getElementById('cameraDetailVideo').innerHTML = `
+                    <div class="video-placeholder">
+                        <span class="status-pill status-offline">${camera.status_display}</span>
+                    </div>
+                `;
+            }
+            
+            document.getElementById('cameraDetailMeta').innerHTML = `
+                <span class="mono">RTSP: ${camera.rtsp_url}</span>
+                <span class="status-col">위치: ${camera.location || '미설정'}</span>
+            `;
+            
+            document.getElementById('cameraDetailModal').style.display = 'flex';
+        });
+}
+
+function closeCameraDetail() {
+    document.getElementById('cameraDetailModal').style.display = 'none';
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+</script>
+{% endblock %}

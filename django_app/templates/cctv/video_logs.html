@@ -1,0 +1,211 @@
+{% extends 'cctv/base.html' %}
+
+{% block title %}이벤트 로그 - Hotel CCTV Monitoring{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div class="page-header">
+        <div>
+            <p class="eyebrow">이벤트 로그</p>
+            <h1>영상 이벤트 목록</h1>
+        </div>
+    </div>
+    
+    <form class="filters" method="get">
+        <div class="filter-group">
+            <label>날짜</label>
+            <input type="date" name="date" id="logDate" value="{{ filters.date }}">
+        </div>
+        {% if user.is_admin %}
+        <div class="filter-group">
+            <label>지역</label>
+            <select name="region" id="logRegion">
+                <option value="all" {% if filters.region == 'all' %}selected{% endif %}>전체</option>
+                {% for region in regions %}
+                <option value="{{ region.name }}" {% if filters.region == region.name %}selected{% endif %}>{{ region.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>이벤트 종류</label>
+            <select name="type" id="logType">
+                <option value="all" {% if filters.type == 'all' %}selected{% endif %}>전체</option>
+                <option value="cash" {% if filters.type == 'cash' %}selected{% endif %}>현금</option>
+                <option value="fire" {% if filters.type == 'fire' %}selected{% endif %}>화재</option>
+                <option value="violence" {% if filters.type == 'violence' %}selected{% endif %}>난동</option>
+            </select>
+        </div>
+        <div class="filter-group">
+            <label>지점명</label>
+            <input name="branch" placeholder="지점 검색" value="{{ filters.branch }}">
+        </div>
+        {% endif %}
+        <button class="ghost-button small" type="submit">검색</button>
+    </form>
+
+    <div class="video-three-col">
+        <!-- Events List -->
+        <div class="video-col">
+            <div class="video-events">
+                <div class="table-body" id="eventsList">
+                    {% for event in events %}
+                    <button class="table-row-button {% if forloop.first %}active{% endif %}" 
+                            data-event-id="{{ event.id }}"
+                            onclick="selectEvent({{ event.id }})">
+                        <div class="branch-cell">
+                            <span class="branch-name">{{ event.branch.name }}</span>
+                            <span class="subtext mono">{{ event.camera.camera_id }}</span>
+                        </div>
+                        <div class="event-type">{{ event.get_event_type_display }}</div>
+                        <div class="event-time mono">
+                            {{ event.created_at|date:"Y-m-d" }}<br>
+                            {{ event.created_at|time:"H:i" }}
+                        </div>
+                        <div class="status-col">
+                            <span class="status-pill status-{% if event.status == 'confirmed' %}confirmed{% elif event.status == 'pending' %}pending{% else %}review{% endif %}">
+                                {{ event.get_status_display }}
+                            </span>
+                        </div>
+                    </button>
+                    {% empty %}
+                    <div class="table-row empty-row">
+                        <span class="empty-text">이벤트가 없습니다.</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        
+        <!-- Event Viewer -->
+        <div class="video-col">
+            <div class="video-viewer">
+                <div class="viewer-header">
+                    <p class="eyebrow">이벤트 영상</p>
+                    <h3 id="viewerTitle">
+                        {% if events %}
+                        {{ events.0.branch.name }} | {{ events.0.camera.camera_id }}
+                        {% else %}
+                        선택된 이벤트 없음
+                        {% endif %}
+                    </h3>
+                </div>
+                <div class="viewer-body" id="viewerBody">영상 썸네일</div>
+                <div class="viewer-meta" id="viewerMeta">
+                    {% if events %}
+                    {{ events.0.created_at|date:"Y-m-d" }} {{ events.0.created_at|time:"H:i" }} · {{ events.0.get_event_type_display }}
+                    <span class="status-pill status-{% if events.0.status == 'confirmed' %}confirmed{% elif events.0.status == 'pending' %}pending{% else %}review{% endif %}">
+                        {{ events.0.get_status_display }}
+                    </span>
+                    {% endif %}
+                </div>
+                <div class="viewer-actions" style="margin-top: 12px;">
+                    <button class="ghost-button small" onclick="showEventDetail()">자세히 보기</button>
+                    <button class="primary-button" onclick="updateEventStatus('confirmed')" style="margin-left: 8px;">확인 완료</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Camera Status -->
+        <div class="video-col status-col">
+            <div class="panel video-status">
+                <div class="table-head">카메라 상태</div>
+                <div class="table-body">
+                    {% for cam in offline_cameras %}
+                    <div class="table-row events">
+                        <div class="status-inner">
+                            <div class="branch-cell">
+                                <span class="branch-name">{{ cam.branch.name }}</span>
+                                <span class="subtext mono">{{ cam.camera_id }}</span>
+                            </div>
+                            <div class="status-col">
+                                <span class="status-pill status-offline">{{ cam.get_status_display }}</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% empty %}
+                    <div class="table-row">
+                        <span class="empty-text">모든 카메라 정상</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let selectedEventId = {% if events %}{{ events.0.id }}{% else %}null{% endif %};
+
+function selectEvent(eventId) {
+    selectedEventId = eventId;
+    
+    // Update active state
+    document.querySelectorAll('.table-row-button').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.eventId == eventId) {
+            btn.classList.add('active');
+        }
+    });
+    
+    // Load event details
+    fetch(`/api/events/${eventId}/`)
+        .then(response => response.json())
+        .then(event => {
+            document.getElementById('viewerTitle').textContent = `${event.branch} | ${event.camera}`;
+            document.getElementById('viewerMeta').innerHTML = `
+                ${event.created_at.split('T')[0]} ${event.created_at.split('T')[1].substring(0, 5)} · ${event.type_display}
+                <span class="status-pill status-${event.status === 'confirmed' ? 'confirmed' : event.status === 'pending' ? 'pending' : 'review'}">
+                    ${event.status_display}
+                </span>
+            `;
+        });
+}
+
+function showEventDetail() {
+    if (!selectedEventId) {
+        alert('이벤트를 선택해주세요.');
+        return;
+    }
+    // Could open a modal with more details
+    alert('이벤트 상세 보기: ' + selectedEventId);
+}
+
+function updateEventStatus(status) {
+    if (!selectedEventId) {
+        alert('이벤트를 선택해주세요.');
+        return;
+    }
+    
+    fetch(`/api/events/${selectedEventId}/`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCookie('csrftoken')
+        },
+        body: JSON.stringify({ status: status })
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            alert('상태가 업데이트되었습니다.');
+            window.location.reload();
+        }
+    });
+}
+
+function getCookie(name) {
+    let cookieValue = null;
+    if (document.cookie && document.cookie !== '') {
+        const cookies = document.cookie.split(';');
+        for (let i = 0; i < cookies.length; i++) {
+            const cookie = cookies[i].trim();
+            if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                break;
+            }
+        }
+    }
+    return cookieValue;
+}
+</script>
+{% endblock %}
