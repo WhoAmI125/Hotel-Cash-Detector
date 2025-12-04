@@ -34,6 +34,8 @@ class UnifiedDetector:
         
         # Cashier zone settings
         self.cashier_zone_enabled = self.config.get('cashier_zone_enabled', True)
+        # Show zone overlay on video (UI only - hidden by default)
+        self.show_zone_overlay = self.config.get('show_zone_overlay', False)
         
         # Initialize individual detectors
         self.cash_detector = CashTransactionDetector({
@@ -220,8 +222,8 @@ class UnifiedDetector:
     
     def draw_overlays(self, frame: np.ndarray, detections: List[Detection]) -> np.ndarray:
         """Draw all detection overlays on frame"""
-        # Draw cashier zone only if enabled
-        if self.detect_cash and self.cashier_zone_enabled:
+        # Draw cashier zone only if show_zone_overlay is enabled (hidden by default)
+        if self.detect_cash and self.show_zone_overlay:
             frame = self.cash_detector.draw_cashier_zone(frame)
         
         # Draw detections

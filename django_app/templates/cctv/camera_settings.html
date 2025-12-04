@@ -251,9 +251,9 @@
 </div>
 
 <div class="settings-grid">
-    <!-- Live Video & Cashier Zone Settings -->
-    <div class="settings-section">
-        <h3>📹 {{ t.live }} - {{ t.setup_cashier_zone }}</h3>
+    <!-- Live Video Section (Always visible) -->
+    <div class="settings-section" id="liveVideoSection">
+        <h3>📹 {{ t.live }}</h3>
         
         <!-- Connection Status -->
         <div class="connection-status" id="connectionStatus">
@@ -263,50 +263,82 @@
             <button class="btn btn-sm btn-secondary" onclick="startLivePreview()">▶ Live Preview</button>
         </div>
         
+        <!-- Video Dimensions Display -->
+        <div class="video-dimensions" id="videoDimensions" style="display: none; padding: 8px 12px; background: var(--blue-50); border-radius: 8px; margin-bottom: 12px; font-size: 13px;">
+            <span style="color: var(--blue-600); font-weight: 600;">📐 {{ t.video_dimensions|default:"Video Dimensions" }}:</span>
+            <span id="videoDimensionsText" style="color: var(--text-primary); margin-left: 8px;">-</span>
+        </div>
+        
         <div class="zone-canvas-container" id="videoContainer">
             <img id="liveVideo" src="" alt="Live Preview" style="display:none;">
             <canvas id="zoneCanvas" width="1024" height="576"></canvas>
         </div>
         
-        <div class="toggle-group">
+        <!-- Cashier Zone Toggle Button (Hidden by default, click to show) -->
+        <div class="toggle-group" style="margin-top: 16px;">
             <div class="toggle-info">
-                <span class="toggle-label">{{ t.zone_enabled }}</span>
+                <span class="toggle-label">{{ t.setup_cashier_zone }}</span>
                 <span class="toggle-desc">{{ t.cashier_zone }}</span>
             </div>
-            <label class="toggle-switch">
-                <input type="checkbox" id="zoneEnabled" {% if camera.cashier_zone_enabled %}checked{% endif %}>
-                <span class="toggle-slider"></span>
-            </label>
+            <button class="btn btn-sm btn-ghost" id="toggleCashierZoneBtn" onclick="toggleCashierZoneSettings()">
+                <span id="cashierZoneBtnText">▼ Show</span>
+            </button>
         </div>
         
-        <div class="zone-controls">
-            <div class="form-group">
-                <label>{{ t.zone_x }}</label>
-                <input type="number" id="zoneX" value="{{ camera.cashier_zone_x }}" min="0" max="640">
+        <!-- Cashier Zone Settings (Hidden by default) -->
+        <div id="cashierZoneSettings" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border-light);">
+            <div class="toggle-group">
+                <div class="toggle-info">
+                    <span class="toggle-label">{{ t.zone_enabled }}</span>
+                    <span class="toggle-desc">{{ t.cashier_zone }}</span>
+                </div>
+                <label class="toggle-switch">
+                    <input type="checkbox" id="zoneEnabled" {% if camera.cashier_zone_enabled %}checked{% endif %}>
+                    <span class="toggle-slider"></span>
+                </label>
             </div>
-            <div class="form-group">
-                <label>{{ t.zone_y }}</label>
-                <input type="number" id="zoneY" value="{{ camera.cashier_zone_y }}" min="0" max="480">
+            
+            <div class="zone-controls">
+                <div class="form-group">
+                    <label>{{ t.zone_x }}</label>
+                    <input type="number" id="zoneX" value="{{ camera.cashier_zone_x }}" min="0" max="640">
+                </div>
+                <div class="form-group">
+                    <label>{{ t.zone_y }}</label>
+                    <input type="number" id="zoneY" value="{{ camera.cashier_zone_y }}" min="0" max="480">
+                </div>
+                <div class="form-group">
+                    <label>{{ t.zone_width }}</label>
+                    <input type="number" id="zoneWidth" value="{{ camera.cashier_zone_width }}" min="50" max="640">
+                </div>
+                <div class="form-group">
+                    <label>{{ t.zone_height }}</label>
+                    <input type="number" id="zoneHeight" value="{{ camera.cashier_zone_height }}" min="50" max="480">
+                </div>
             </div>
-            <div class="form-group">
-                <label>{{ t.zone_width }}</label>
-                <input type="number" id="zoneWidth" value="{{ camera.cashier_zone_width }}" min="50" max="640">
+            
+            <div class="btn-group">
+                <button class="btn btn-secondary" onclick="resetZone()">{{ t.reset_zone }}</button>
+                <button class="btn btn-primary" onclick="saveZone()">{{ t.save_zone }}</button>
             </div>
-            <div class="form-group">
-                <label>{{ t.zone_height }}</label>
-                <input type="number" id="zoneHeight" value="{{ camera.cashier_zone_height }}" min="50" max="480">
-            </div>
-        </div>
-        
-        <div class="btn-group">
-            <button class="btn btn-secondary" onclick="resetZone()">{{ t.reset_zone }}</button>
-            <button class="btn btn-primary" onclick="saveZone()">{{ t.save_zone }}</button>
         </div>
     </div>
     
     <!-- Detection Settings -->
     <div class="settings-section">
         <h3>{{ t.detection_settings }}</h3>
+        
+        <!-- Show Cashier Zone Box Toggle (UI only - hidden by default) -->
+        <div class="toggle-group" style="background: var(--yellow-50); border: 1px solid var(--yellow-200);">
+            <div class="toggle-info">
+                <span class="toggle-label">{{ t.show_zone_overlay }}</span>
+                <span class="toggle-desc">{{ t.cashier_zone }}</span>
+            </div>
+            <label class="toggle-switch">
+                <input type="checkbox" id="showZoneOverlay" onchange="toggleZoneOverlay()">
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
         
         <!-- Detection Toggles -->
         <div class="toggle-group">
@@ -357,6 +389,17 @@
                    oninput="updateSliderValue('cash')">
         </div>
         
+        <!-- Hand Touch Distance Slider (pixels) -->
+        <div class="slider-group">
+            <div class="slider-header">
+                <span class="slider-label">{{ t.hand_touch_distance }}</span>
+                <span class="slider-value" id="handDistanceValue">{{ camera.hand_touch_distance|default:100 }}px</span>
+            </div>
+            <input type="range" class="slider-input" id="handTouchDistance" 
+                   min="30" max="300" step="10" value="{{ camera.hand_touch_distance|default:100 }}"
+                   oninput="updateSliderValue('handDistance')">
+        </div>
+        
         <!-- Violence Confidence Slider -->
         <div class="slider-group">
             <div class="slider-header">
@@ -393,12 +436,39 @@
     let videoActive = false;
     let canvasWidth = 1024;
     let canvasHeight = 576;
+    let cashierZoneVisible = false;
+    let showZoneOverlay = false;  // Yellow box hidden by default
     let currentZone = {
         x: {{ camera.cashier_zone_x }},
         y: {{ camera.cashier_zone_y }},
         width: {{ camera.cashier_zone_width }},
         height: {{ camera.cashier_zone_height }}
     };
+    
+    // Toggle zone overlay visibility (yellow box on video)
+    function toggleZoneOverlay() {
+        showZoneOverlay = document.getElementById('showZoneOverlay').checked;
+        drawZone();
+    }
+    
+    // Toggle cashier zone settings visibility
+    function toggleCashierZoneSettings() {
+        const settings = document.getElementById('cashierZoneSettings');
+        const btnText = document.getElementById('cashierZoneBtnText');
+        cashierZoneVisible = !cashierZoneVisible;
+        
+        if (cashierZoneVisible) {
+            settings.style.display = 'block';
+            btnText.textContent = '▲ Hide';
+            // Auto-enable zone overlay when editing
+            showZoneOverlay = true;
+            document.getElementById('showZoneOverlay').checked = true;
+            drawZone();
+        } else {
+            settings.style.display = 'none';
+            btnText.textContent = '▼ Show';
+        }
+    }
     
     // Initialize canvas with placeholder or transparent overlay
     function initCanvas() {
@@ -411,8 +481,7 @@
             ctx.fillStyle = '#6b7684';
             ctx.font = '18px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('Click "Live Preview" to start video', canvas.width / 2, canvas.height / 2 - 20);
-            ctx.fillText('Then draw the cashier zone', canvas.width / 2, canvas.height / 2 + 10);
+            ctx.fillText('Click "Live Preview" to start video', canvas.width / 2, canvas.height / 2);
         }
         drawZone();
     }
@@ -427,9 +496,11 @@
             ctx.fillStyle = '#6b7684';
             ctx.font = '18px sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText('Click "Live Preview" to start video', canvas.width / 2, canvas.height / 2 - 20);
-            ctx.fillText('Then draw the cashier zone', canvas.width / 2, canvas.height / 2 + 10);
+            ctx.fillText('Click "Live Preview" to start video', canvas.width / 2, canvas.height / 2);
         }
+        
+        // Only draw zone rectangle when overlay toggle is ON
+        if (!showZoneOverlay) return;
         
         // Draw zone rectangle with yellow color for visibility
         ctx.strokeStyle = '#ffcc00';
@@ -515,9 +586,15 @@
     }
     
     function updateSliderValue(type) {
-        const slider = document.getElementById(type + 'Confidence');
-        const display = document.getElementById(type + 'ConfValue');
-        display.textContent = parseFloat(slider.value).toFixed(2);
+        if (type === 'handDistance') {
+            const slider = document.getElementById('handTouchDistance');
+            const display = document.getElementById('handDistanceValue');
+            display.textContent = slider.value + 'px';
+        } else {
+            const slider = document.getElementById(type + 'Confidence');
+            const display = document.getElementById(type + 'ConfValue');
+            display.textContent = parseFloat(slider.value).toFixed(2);
+        }
     }
     
     async function saveZone() {
@@ -555,6 +632,7 @@
             detect_violence: document.getElementById('detectViolence').checked,
             detect_fire: document.getElementById('detectFire').checked,
             cash_confidence: parseFloat(document.getElementById('cashConfidence').value),
+            hand_touch_distance: parseInt(document.getElementById('handTouchDistance').value),
             violence_confidence: parseFloat(document.getElementById('violenceConfidence').value),
             fire_confidence: parseFloat(document.getElementById('fireConfidence').value),
             cashier_zone: {
@@ -644,9 +722,11 @@
         const statusText = document.querySelector('.status-text');
         indicator.className = 'status-indicator offline';
         statusText.textContent = '{{ t.status_offline }}';
+        // Hide dimensions when video fails
+        document.getElementById('videoDimensions').style.display = 'none';
     };
     
-    // Handle video load to resize canvas
+    // Handle video load to resize canvas and show dimensions
     document.getElementById('liveVideo').onload = function() {
         // Update canvas size to match video actual display size
         const video = this;
@@ -656,6 +736,10 @@
         canvas.height = canvasHeight;
         videoActive = true;
         drawZone();
+        
+        // Show video dimensions
+        document.getElementById('videoDimensions').style.display = 'block';
+        document.getElementById('videoDimensionsText').textContent = `${canvasWidth} × ${canvasHeight} px`;
     };
     
     // Start live preview without connection test

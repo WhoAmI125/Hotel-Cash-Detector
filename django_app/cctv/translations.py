@@ -41,6 +41,7 @@ TRANSLATIONS = {
         'event_count': '이벤트',
         'status': '상태',
         'view_all': '전체 보기',
+        'detection_service': '백그라운드 감지 서비스',
         
         # Monitor
         'monitor_all_title': '전체 지점 모니터',
@@ -113,6 +114,7 @@ TRANSLATIONS = {
         'cashier_zone': '캐셔 구역',
         'setup_cashier_zone': '캐셔 구역 설정',
         'zone_enabled': '구역 활성화',
+        'show_zone_overlay': '구역 오버레이 표시',
         'zone_x': 'X 좌표',
         'zone_y': 'Y 좌표',
         'zone_width': '너비',
@@ -122,6 +124,8 @@ TRANSLATIONS = {
         'save_zone': '구역 저장',
         'confidence_threshold': '신뢰도 임계값',
         'cash_confidence': '현금 감지 신뢰도',
+        'hand_touch_distance': '손 거리 임계값',
+        'video_dimensions': '비디오 해상도',
         'violence_confidence': '난동 감지 신뢰도',
         'fire_confidence': '화재 감지 신뢰도',
         'detect_cash': '현금 감지',
@@ -235,6 +239,7 @@ TRANSLATIONS = {
         'event_count': 'Events',
         'status': 'Status',
         'view_all': 'View All',
+        'detection_service': 'Background Detection Service',
         
         # Monitor
         'monitor_all_title': 'All Branch Monitor',
@@ -307,6 +312,7 @@ TRANSLATIONS = {
         'cashier_zone': 'Cashier Zone',
         'setup_cashier_zone': 'Setup Cashier Zone',
         'zone_enabled': 'Zone Enabled',
+        'show_zone_overlay': 'Show Zone Overlay',
         'zone_x': 'X Position',
         'zone_y': 'Y Position',
         'zone_width': 'Width',
@@ -316,6 +322,8 @@ TRANSLATIONS = {
         'save_zone': 'Save Zone',
         'confidence_threshold': 'Confidence Threshold',
         'cash_confidence': 'Cash Detection Confidence',
+        'hand_touch_distance': 'Hand Touch Distance',
+        'video_dimensions': 'Video Dimensions',
         'violence_confidence': 'Violence Detection Confidence',
         'fire_confidence': 'Fire Detection Confidence',
         'detect_cash': 'Detect Cash',

@@ -331,12 +331,15 @@ def toggle_detection():
         det.detect_violence = enabled
     elif detection_type == 'fire':
         det.detect_fire = enabled
+    elif detection_type == 'zone_overlay':
+        det.show_zone_overlay = enabled
     
     return jsonify({
         'success': True,
         'detect_cash': det.detect_cash,
         'detect_violence': det.detect_violence,
-        'detect_fire': det.detect_fire
+        'detect_fire': det.detect_fire,
+        'show_zone_overlay': getattr(det, 'show_zone_overlay', False)
     })
 
 

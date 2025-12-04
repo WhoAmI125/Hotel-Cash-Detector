@@ -110,6 +110,9 @@ class Camera(models.Model):
     violence_confidence = models.FloatField(default=0.6)
     fire_confidence = models.FloatField(default=0.5)
     
+    # Hand touch distance threshold (pixels) for cash detection
+    hand_touch_distance = models.IntegerField(default=100)
+    
     # Detection toggles
     detect_cash = models.BooleanField(default=True)
     detect_violence = models.BooleanField(default=True)

@@ -30,8 +30,16 @@ class CashTransactionDetector(BaseDetector):
         self.pose_model = None
         self.person_model = None
         
-        # Cashier zone [x, y, width, height]
+        # Cashier zone as percentage [x%, y%, width%, height%] - responsive to video size
+        # Default zone covers center-bottom area (typical cashier position)
+        self.cashier_zone_percent = config.get('cashier_zone_percent', [0.1, 0.3, 0.8, 0.6])
+        
+        # Legacy pixel-based zone (will be converted to percentage if video size known)
         self.cashier_zone = config.get('cashier_zone', [100, 100, 400, 300])
+        
+        # Video dimensions (updated when processing frames)
+        self.video_width = config.get('video_width', 1920)
+        self.video_height = config.get('video_height', 1080)
         
         # Detection parameters
         self.hand_touch_distance = config.get('hand_touch_distance', 100)
@@ -83,9 +91,45 @@ class CashTransactionDetector(BaseDetector):
             print(f"❌ Failed to initialize CashTransactionDetector: {e}")
             return False
     
-    def set_cashier_zone(self, zone: List[int]):
-        """Update the cashier zone"""
-        self.cashier_zone = zone
+    def update_video_dimensions(self, width: int, height: int):
+        """Update video dimensions and recalculate pixel zone from percentage"""
+        self.video_width = width
+        self.video_height = height
+        # Convert percentage zone to pixel zone for current video size
+        self.cashier_zone = self.percent_to_pixels(self.cashier_zone_percent)
+    
+    def percent_to_pixels(self, zone_percent: List[float]) -> List[int]:
+        """Convert percentage-based zone to pixel coordinates"""
+        px, py, pw, ph = zone_percent
+        return [
+            int(px * self.video_width),
+            int(py * self.video_height),
+            int(pw * self.video_width),
+            int(ph * self.video_height)
+        ]
+    
+    def pixels_to_percent(self, zone_pixels: List[int]) -> List[float]:
+        """Convert pixel-based zone to percentage coordinates"""
+        x, y, w, h = zone_pixels
+        return [
+            x / self.video_width if self.video_width > 0 else 0,
+            y / self.video_height if self.video_height > 0 else 0,
+            w / self.video_width if self.video_width > 0 else 0,
+            h / self.video_height if self.video_height > 0 else 0
+        ]
+    
+    def set_cashier_zone(self, zone: List[int], as_percent: bool = False):
+        """Update the cashier zone (can be pixels or percentage)"""
+        if as_percent:
+            self.cashier_zone_percent = zone
+            self.cashier_zone = self.percent_to_pixels(zone)
+        else:
+            self.cashier_zone = zone
+            self.cashier_zone_percent = self.pixels_to_percent(zone)
+    
+    def set_hand_touch_distance(self, distance: int):
+        """Update hand touch distance threshold"""
+        self.hand_touch_distance = max(10, min(500, distance))  # Clamp between 10-500px
     
     def is_in_cashier_zone(self, point: Tuple[int, int]) -> bool:
         """Check if a point is inside the cashier zone"""
@@ -141,8 +185,18 @@ class CashTransactionDetector(BaseDetector):
         """
         Detect when hands from different people are close together
         (indicating potential cash exchange)
+        
+        Uses OR logic: triggers if EITHER:
+        - Distance is within hand_touch_distance threshold, OR
+        - Confidence is high enough (>= min_cash_confidence)
+        
+        This ensures detection works even if one metric is slightly off.
         """
         proximity_events = []
+        
+        # Use a more relaxed distance threshold for initial detection
+        # Will use actual distance for scoring later
+        max_detection_distance = self.hand_touch_distance * 1.5  # 50% more lenient
         
         for i, person1 in enumerate(people_hands):
             for j, person2 in enumerate(people_hands):
@@ -153,13 +207,25 @@ class CashTransactionDetector(BaseDetector):
                 for hand1_name, hand1_pos in person1.get('hands', {}).items():
                     for hand2_name, hand2_pos in person2.get('hands', {}).items():
                         distance = self.calculate_hand_distance(hand1_pos[:2], hand2_pos[:2])
+                        hand_confidence = min(hand1_pos[2], hand2_pos[2])
                         
-                        if distance < self.hand_touch_distance:
+                        # OR logic: accept if EITHER distance OR confidence is good
+                        distance_ok = distance < self.hand_touch_distance
+                        confidence_ok = hand_confidence >= self.min_cash_confidence
+                        distance_close_enough = distance < max_detection_distance
+                        
+                        # Trigger if: (distance OK) OR (confidence high AND distance reasonably close)
+                        if distance_ok or (confidence_ok and distance_close_enough):
                             # Calculate midpoint of the hand interaction
                             midpoint = (
                                 (hand1_pos[0] + hand2_pos[0]) // 2,
                                 (hand1_pos[1] + hand2_pos[1]) // 2
                             )
+                            
+                            # Calculate combined score (higher is better)
+                            # Normalize distance score: 1.0 when touching, 0.0 at max_detection_distance
+                            distance_score = max(0, 1 - (distance / max_detection_distance))
+                            combined_score = (distance_score + hand_confidence) / 2
                             
                             proximity_events.append({
                                 'person1_idx': i,
@@ -168,7 +234,11 @@ class CashTransactionDetector(BaseDetector):
                                 'hand2': hand2_name,
                                 'distance': distance,
                                 'midpoint': midpoint,
-                                'confidence': min(hand1_pos[2], hand2_pos[2])
+                                'confidence': hand_confidence,
+                                'distance_score': distance_score,
+                                'combined_score': combined_score,
+                                'distance_ok': distance_ok,
+                                'confidence_ok': confidence_ok
                             })
         
         return proximity_events
@@ -190,6 +260,11 @@ class CashTransactionDetector(BaseDetector):
             return detections
         
         try:
+            # Update video dimensions from frame (for responsive zone)
+            h, w = frame.shape[:2]
+            if w != self.video_width or h != self.video_height:
+                self.update_video_dimensions(w, h)
+            
             # Run pose estimation
             results = self.pose_model(frame, verbose=False, conf=self.pose_confidence)
             
@@ -256,11 +331,16 @@ class CashTransactionDetector(BaseDetector):
                 self.frame_count - self.last_transaction_frame > self.transaction_cooldown and
                 len(transaction_events) > 0):
                 
-                # Find the best transaction event
-                best_event = max(transaction_events, key=lambda x: x['confidence'])
+                # Find the best transaction event using combined score
+                best_event = max(transaction_events, key=lambda x: x.get('combined_score', x['confidence']))
                 
-                # Only alert if confidence >= 70%
-                if best_event['confidence'] < self.min_cash_confidence:
+                # OR logic for final confirmation:
+                # Accept if EITHER distance is good OR confidence is good
+                distance_ok = best_event.get('distance_ok', best_event['distance'] < self.hand_touch_distance)
+                confidence_ok = best_event.get('confidence_ok', best_event['confidence'] >= self.min_cash_confidence)
+                
+                # Must pass at least one threshold
+                if not (distance_ok or confidence_ok):
                     return detections
                 
                 # Create bounding box around the transaction area
@@ -272,13 +352,19 @@ class CashTransactionDetector(BaseDetector):
                     min(frame.shape[0], mp[1] + 60)
                 )
                 
+                # Use combined score as the reported confidence
+                reported_confidence = best_event.get('combined_score', best_event['confidence'])
+                
                 detection = Detection(
                     label="CASH",
-                    confidence=best_event['confidence'],
+                    confidence=reported_confidence,
                     bbox=tx_bbox,
                     metadata={
                         'type': 'hand_exchange',
                         'distance': best_event['distance'],
+                        'hand_confidence': best_event['confidence'],
+                        'distance_ok': distance_ok,
+                        'confidence_ok': confidence_ok,
                         'people_count': len(people_hands),
                         'cashier_zone': self.cashier_zone
                     }

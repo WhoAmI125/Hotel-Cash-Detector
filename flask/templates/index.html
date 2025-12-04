@@ -398,7 +398,8 @@
                             <span id="debug-status" class="px-2 py-1 rounded text-xs font-medium bg-dark-700 text-gray-400">OFF</span>
                         </button>
                         
-                        <button onclick="startDrawCashierZone()" id="btn-draw-zone"
+                        <!-- Draw Cashier Zone button hidden from UI - backend still works -->
+                        <button onclick="startDrawCashierZone()" id="btn-draw-zone" style="display: none;"
                                 class="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-dark-600 hover:bg-dark-500 transition text-left group">
                             <div class="w-8 h-8 rounded-lg bg-accent-orange/20 flex items-center justify-center">
                                 <i class="fas fa-draw-polygon text-accent-orange"></i>
@@ -436,8 +437,8 @@
                     </div>
                 </div>
                 
-                <!-- Zone Info -->
-                <div id="zone-info" class="hidden glass rounded-2xl p-6 card-hover">
+                <!-- Zone Info - Hidden from UI - backend still works -->
+                <div id="zone-info" class="hidden glass rounded-2xl p-6 card-hover" style="display: none !important;">
                     <div class="flex items-center gap-3 mb-4">
                         <div class="w-8 h-8 rounded-lg bg-accent-green/20 flex items-center justify-center">
                             <i class="fas fa-vector-square text-accent-green"></i>

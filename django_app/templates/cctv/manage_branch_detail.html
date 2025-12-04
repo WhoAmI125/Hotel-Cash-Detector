@@ -91,9 +91,10 @@
                     <span class="status-badge {% if camera.status == 'online' %}status-success{% else %}status-danger{% endif %}">
                         {% if camera.status == 'online' %}{{ t.active }}{% else %}{{ t.inactive }}{% endif %}
                     </span>
-                    {% if camera.cashier_zone_enabled %}
+                    {# Cashier zone badge hidden from UI but backend still works #}
+                    {% comment %}{% if camera.cashier_zone_enabled %}
                     <span class="status-badge status-info">{{ t.cashier_zone }}</span>
-                    {% endif %}
+                    {% endif %}{% endcomment %}
                 </div>
                 <div class="camera-thresholds mt-2">
                     <small class="text-muted">

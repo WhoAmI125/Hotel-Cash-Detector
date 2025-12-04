@@ -5,13 +5,27 @@
 - ⚠️ **Violence** - Detects aggressive poses, fighting, and rapid movements
 - 🔥 **Fire/Smoke** - Detects fire-colored regions and smoke
 
+
+## Default Login Credentials
+
+| Username | Password | Role | Description |
+|----------|----------|------|-------------|
+| `admin` | `admin123` | Admin | Full system access |
+| `pm_seoul` | `pm123` | Project Manager | Manages 강남점, 홍대점, 명동점 |
+| `pm_gyeonggi` | `pm123` | Project Manager | Manages 판교점, 일산점 |
+| `pm_busan` | `pm123` | Project Manager | Manages 해운대점, 서면점 |
+
+> ⚠️ **Note**: Change default passwords in production!
+
 ## Features
 
 - 🌐 **Web Dashboard** - Beautiful real-time monitoring interface
 - 📹 **Video Upload** - Process uploaded videos or connect to CCTV
 - ⚡ **Real-time Alerts** - WebSocket-based instant notifications
 - 📊 **Detection Reports** - JSON reports with timestamps and details
-- 🎯 **Cashier Zone Setup** - Visual tool to define the cashier area
+- 🔄 **Background Detection** - Continuous camera monitoring even when not viewing
+<!-- Cashier Zone Setup - Hidden from UI but works in backend -->
+<!-- - 🎯 **Cashier Zone Setup** - Visual tool to define the cashier area -->
 
 ## Installation
 
@@ -30,11 +44,67 @@ The models will be downloaded automatically on first run. You can also manually 
 
 ## Usage
 
-### Option 1: Web Dashboard
+### Option 1: Web Dashboard (Django)
+
+Start the Django web application:
+
+```bash
+cd django_app
+python manage.py runserver
+```
+
+Then open http://localhost:8000 in your browser.
+
+**Features:**
+- Multi-branch hotel monitoring
+- Real-time video streaming with detection overlays
+- Toggle detection types (Cash/Violence/Fire)
+- View detection alerts and statistics
+- Background detection workers
+
+### Option 2: Background Detection Service
+
+Run cameras continuously in the background with automatic event saving:
+
+```bash
+# From project root
+python background_workers.py
+
+# Or as Django management command
+cd django_app
+python manage.py run_camera_workers
+
+# Process specific cameras
+python manage.py run_camera_workers --cameras CAM-SEO-01,CAM-SEO-02
+
+# Process all cameras from a branch
+python manage.py run_camera_workers --branch 1
+```
+
+**Background Worker Features:**
+- Runs all cameras continuously without UI
+- Automatically detects Cash, Violence, Fire events
+- Saves events to database with timestamps
+- Records 1-minute video clips on detection
+- Saves thumbnails for quick preview
+- Auto-reconnects if stream disconnects
+- Reloads camera settings every 30 seconds
+
+**API Endpoints for Background Workers:**
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/workers/status/` | GET | Get status of all workers |
+| `/api/workers/start-all/` | POST | Start all camera workers |
+| `/api/workers/stop-all/` | POST | Stop all camera workers |
+| `/api/workers/<camera_id>/start/` | POST | Start worker for specific camera |
+| `/api/workers/<camera_id>/stop/` | POST | Stop worker for specific camera |
+
+### Option 3: Flask Standalone
 
 Start the Flask web application:
 
 ```bash
+cd flask
 python app.py
 ```
 
@@ -47,7 +117,7 @@ Then open http://localhost:5000 in your browser.
 - View detection alerts and statistics
 - Export detection reports
 
-### Option 2: Command Line Processing
+### Option 4: Command Line Processing
 
 Process videos without the web interface:
 
@@ -65,7 +135,8 @@ python process_videos.py --preview
 python process_videos.py --no-fire --no-violence
 ```
 
-### Option 3: Setup Cashier Zone
+<!--
+### Option 3: Setup Cashier Zone (Hidden from UI - backend only)
 
 Before detecting cash transactions, define the cashier zone:
 
@@ -74,6 +145,7 @@ python setup_cashier_zone.py
 ```
 
 This opens the first video and lets you draw a rectangle around the cashier area.
+-->
 
 ## How Detection Works
 

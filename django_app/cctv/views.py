@@ -34,8 +34,15 @@ except ImportError:
     DETECTOR_AVAILABLE = False
     print("Warning: Detectors not available")
 
+import threading
+import time
+
 # Global detector instances per camera
 camera_detectors = {}
+
+# Global background worker state
+background_workers = {}
+background_worker_lock = threading.Lock()
 
 
 def get_user_branches(user):
@@ -593,6 +600,10 @@ def api_camera_detail(request, camera_id):
         if 'fire_confidence' in data:
             camera.fire_confidence = float(data['fire_confidence'])
         
+        # Hand touch distance for cash detection
+        if 'hand_touch_distance' in data:
+            camera.hand_touch_distance = max(30, min(300, int(data['hand_touch_distance'])))
+        
         # Cashier zone
         if 'cashier_zone' in data:
             zone = data['cashier_zone']
@@ -1032,6 +1043,10 @@ def api_camera_settings(request, camera_id):
     if 'fire_confidence' in data:
         camera.fire_confidence = max(0.0, min(1.0, float(data['fire_confidence'])))
     
+    # Hand touch distance for cash detection
+    if 'hand_touch_distance' in data:
+        camera.hand_touch_distance = max(30, min(300, int(data['hand_touch_distance'])))
+    
     # Cashier zone
     if 'cashier_zone' in data:
         zone = data['cashier_zone']
@@ -1204,6 +1219,8 @@ def get_detector_for_camera(camera):
                 camera.cashier_zone_height
             ],
             'cashier_zone_enabled': camera.cashier_zone_enabled,
+            # Hide zone overlay by default (UI only - backend detection still works)
+            'show_zone_overlay': False,
             # Camera-specific confidence thresholds
             'cash_confidence': camera.cash_confidence,
             'violence_confidence': camera.violence_confidence,
@@ -1212,8 +1229,9 @@ def get_detector_for_camera(camera):
             'detect_cash': camera.detect_cash,
             'detect_violence': camera.detect_violence,
             'detect_fire': camera.detect_fire,
+            # Camera-specific hand touch distance (or use global default)
+            'hand_touch_distance': getattr(camera, 'hand_touch_distance', 100),
             # Other settings from global config
-            'hand_touch_distance': settings.DETECTION_CONFIG.get('HAND_TOUCH_DISTANCE', 100),
             'pose_confidence': settings.DETECTION_CONFIG.get('POSE_CONFIDENCE', 0.5),
             'min_transaction_frames': settings.DETECTION_CONFIG.get('MIN_TRANSACTION_FRAMES', 30),
             'min_fire_frames': settings.DETECTION_CONFIG.get('MIN_FIRE_FRAMES', 15),
@@ -1227,7 +1245,28 @@ def get_detector_for_camera(camera):
 
 
 def generate_frames(camera):
-    """Generator for video frames with detection"""
+    """Generator for video frames with detection
+    
+    Optimization: If a background worker is already connected to this camera,
+    use its frames instead of making a new connection (no delay!)
+    """
+    
+    # Check if background worker is running for this camera
+    with background_worker_lock:
+        if camera.id in background_workers and background_workers[camera.id].running:
+            worker = background_workers[camera.id]
+            print(f"[{camera.camera_id}] Using shared connection from background worker (no delay!)")
+            
+            while worker.running:
+                frame = worker.get_current_frame(with_overlay=True)
+                if frame is not None:
+                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                time.sleep(0.033)  # ~30fps
+            return
+    
+    # No background worker - make new connection (legacy behavior)
     cap = cv2.VideoCapture(camera.rtsp_url)
     
     # Set timeout for connection
@@ -1578,3 +1617,411 @@ def get_translations_api(request):
     lang = request.session.get('lang', request.COOKIES.get('lang', 'ko'))
     translations = get_translation(lang)
     return JsonResponse(translations)
+
+
+# ==================== BACKGROUND WORKERS ====================
+
+class BackgroundCameraWorker:
+    """Background worker for continuous camera detection"""
+    
+    def __init__(self, camera, models_dir, output_dir):
+        self.camera_id = camera.id
+        self.camera_code = camera.camera_id
+        self.models_dir = models_dir
+        self.output_dir = output_dir
+        self.running = False
+        self.thread = None
+        self.detector = None
+        self.last_event_time = {}
+        self.event_cooldown = 30
+        self.clip_buffer = []
+        self.clip_buffer_size = 1800
+        self.frame_count = 0
+        self.status = 'stopped'
+        self.last_error = None
+        
+        # Shared frame for live viewing (no need to reconnect!)
+        self.current_frame = None
+        self.current_frame_with_overlay = None
+        self.frame_lock = threading.Lock()
+        
+        # Uptime tracking
+        self.start_time = None
+        self.events_detected = 0
+        self.frames_processed = 0
+    
+    def get_uptime(self):
+        """Get worker uptime as formatted string"""
+        if not self.start_time:
+            return "Not started"
+        elapsed = datetime.now() - self.start_time
+        hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    
+    def get_stats(self):
+        """Get worker statistics"""
+        return {
+            'uptime': self.get_uptime(),
+            'start_time': self.start_time.isoformat() if self.start_time else None,
+            'events_detected': self.events_detected,
+            'frames_processed': self.frames_processed,
+            'running': self.running,
+        }
+    
+    def get_current_frame(self, with_overlay=True):
+        """Get the current frame for live viewing (shared from background worker)"""
+        with self.frame_lock:
+            if with_overlay and self.current_frame_with_overlay is not None:
+                return self.current_frame_with_overlay.copy()
+            elif self.current_frame is not None:
+                return self.current_frame.copy()
+            return None
+    
+    def get_camera(self):
+        try:
+            return Camera.objects.get(id=self.camera_id)
+        except Camera.DoesNotExist:
+            return None
+    
+    def create_detector(self, camera):
+        if not DETECTOR_AVAILABLE:
+            return None
+        
+        zone = camera.get_cashier_zone()
+        config = {
+            'models_dir': str(self.models_dir),
+            'cashier_zone': [zone['x'], zone['y'], zone['width'], zone['height']],
+            'hand_touch_distance': camera.hand_touch_distance,
+            'pose_confidence': 0.5,
+            'min_transaction_frames': 5,
+            'fire_confidence': camera.fire_confidence,
+            'min_fire_frames': 3,
+            'violence_confidence': camera.violence_confidence,
+            'min_violence_frames': 10,
+            'detect_cash': camera.detect_cash,
+            'detect_violence': camera.detect_violence,
+            'detect_fire': camera.detect_fire,
+            'cash_confidence': camera.cash_confidence,
+        }
+        return UnifiedDetector(config)
+    
+    def save_event(self, camera, event_type, confidence, frame_number, bbox=None, clip_path=None, thumbnail_path=None):
+        now = datetime.now()
+        last_time = self.last_event_time.get(event_type)
+        if last_time and (now - last_time).total_seconds() < self.event_cooldown:
+            return None
+        
+        self.last_event_time[event_type] = now
+        
+        event = Event.objects.create(
+            branch=camera.branch,
+            camera=camera,
+            event_type=event_type,
+            confidence=confidence,
+            frame_number=frame_number,
+            bbox_x1=bbox[0] if bbox else 0,
+            bbox_y1=bbox[1] if bbox else 0,
+            bbox_x2=bbox[2] if bbox else 0,
+            bbox_y2=bbox[3] if bbox else 0,
+            clip_path=clip_path,
+            thumbnail_path=thumbnail_path,
+        )
+        return event
+    
+    def save_clip(self, frames, camera, detection_type, fps=30):
+        if not frames:
+            return None
+        
+        import cv2
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{camera.camera_id}_{detection_type}_{timestamp}.mp4"
+        clip_path = Path(self.output_dir) / 'clips' / filename
+        clip_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        height, width = frames[0].shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(str(clip_path), fourcc, fps, (width, height))
+        for frame in frames:
+            out.write(frame)
+        out.release()
+        
+        # Thumbnail
+        thumb_filename = f"{camera.camera_id}_{detection_type}_{timestamp}.jpg"
+        thumb_path = Path(self.output_dir) / 'thumbnails' / thumb_filename
+        thumb_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(thumb_path), frames[len(frames)//2])
+        
+        # Return relative URLs for web access
+        return f'/media/clips/{filename}', f'/media/thumbnails/{thumb_filename}'
+    
+    def run(self):
+        import cv2
+        from django.db import connection
+        connection.close()
+        
+        camera = self.get_camera()
+        if not camera:
+            self.status = 'error'
+            self.last_error = 'Camera not found'
+            return
+        
+        # Set start time for uptime tracking
+        self.start_time = datetime.now()
+        
+        self.status = 'starting'
+        self.detector = self.create_detector(camera)
+        if not self.detector:
+            self.status = 'error'
+            self.last_error = 'Detector not available'
+            return
+        
+        cap = cv2.VideoCapture(camera.rtsp_url)
+        if not cap.isOpened():
+            self.status = 'error'
+            self.last_error = f'Cannot open stream: {camera.rtsp_url}'
+            camera.status = 'offline'
+            camera.save()
+            return
+        
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        self.status = 'running'
+        camera.status = 'online'
+        camera.last_connected = timezone.now()
+        camera.save()
+        
+        last_settings_check = time.time()
+        
+        while self.running:
+            ret, frame = cap.read()
+            if not ret:
+                self.status = 'reconnecting'
+                cap.release()
+                time.sleep(5)
+                cap = cv2.VideoCapture(camera.rtsp_url)
+                if cap.isOpened():
+                    self.status = 'running'
+                continue
+            
+            self.frame_count += 1
+            
+            # Buffer for clips
+            self.clip_buffer.append(frame.copy())
+            if len(self.clip_buffer) > self.clip_buffer_size:
+                self.clip_buffer.pop(0)
+            
+            if self.frame_count % 2 != 0:
+                continue
+            
+            # Reload settings
+            if time.time() - last_settings_check > 30:
+                camera = self.get_camera()
+                if camera:
+                    self.detector.detect_cash = camera.detect_cash
+                    self.detector.detect_violence = camera.detect_violence
+                    self.detector.detect_fire = camera.detect_fire
+                last_settings_check = time.time()
+            
+            try:
+                # Process without overlay for detection
+                result = self.detector.process_frame(frame, draw_overlay=False)
+                
+                # Also create a frame with overlay for live viewing
+                result_with_overlay = self.detector.process_frame(frame.copy(), draw_overlay=True)
+                
+                # Store current frames for live viewing (shared connection!)
+                with self.frame_lock:
+                    self.current_frame = frame.copy()
+                    self.current_frame_with_overlay = result_with_overlay.get('frame', frame)
+                
+                # Track frames processed
+                self.frames_processed += 1
+                    
+            except Exception as e:
+                self.last_error = str(e)
+                continue
+            
+            if result.get('detections'):
+                for det in result['detections']:
+                    det_type = det.get('type', '').lower()
+                    confidence = det.get('confidence', 0)
+                    bbox = det.get('bbox')
+                    
+                    if 'cash' in det_type:
+                        event_type = 'cash'
+                    elif 'violence' in det_type:
+                        event_type = 'violence'
+                    elif 'fire' in det_type:
+                        event_type = 'fire'
+                    else:
+                        continue
+                    
+                    clip_path = thumb_path = None
+                    if self.clip_buffer:
+                        paths = self.save_clip(self.clip_buffer.copy(), camera, event_type, fps)
+                        if paths:
+                            clip_path, thumb_path = paths
+                    
+                    self.save_event(camera, event_type, confidence, self.frame_count, bbox, clip_path, thumb_path)
+            
+            time.sleep(0.01)
+        
+        cap.release()
+        self.status = 'stopped'
+        camera = self.get_camera()
+        if camera:
+            camera.status = 'offline'
+            camera.save()
+    
+    def start(self):
+        if self.running:
+            return False
+        self.running = True
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+        return True
+    
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        return True
+
+
+@login_required
+@require_http_methods(['POST'])
+def start_background_worker(request, camera_id):
+    """Start background worker for a camera"""
+    if not request.user.is_admin():
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    
+    camera = get_object_or_404(Camera, id=camera_id)
+    
+    with background_worker_lock:
+        if camera_id in background_workers and background_workers[camera_id].running:
+            return JsonResponse({'error': 'Worker already running', 'status': 'running'})
+        
+        models_dir = FLASK_DIR / 'models'
+        output_dir = settings.MEDIA_ROOT
+        
+        worker = BackgroundCameraWorker(camera, models_dir, output_dir)
+        worker.start()
+        background_workers[camera_id] = worker
+    
+    return JsonResponse({'success': True, 'message': f'Worker started for {camera.camera_id}'})
+
+
+@login_required
+@require_http_methods(['POST'])
+def stop_background_worker(request, camera_id):
+    """Stop background worker for a camera"""
+    if not request.user.is_admin():
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    
+    with background_worker_lock:
+        if camera_id not in background_workers:
+            return JsonResponse({'error': 'Worker not found', 'status': 'stopped'})
+        
+        worker = background_workers[camera_id]
+        worker.stop()
+        del background_workers[camera_id]
+    
+    return JsonResponse({'success': True, 'message': 'Worker stopped'})
+
+
+@login_required
+def get_background_worker_status(request):
+    """Get status of all background workers"""
+    if not request.user.is_admin():
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    
+    statuses = {}
+    with background_worker_lock:
+        for camera_id, worker in background_workers.items():
+            camera = Camera.objects.filter(id=camera_id).first()
+            statuses[camera_id] = {
+                'camera_id': worker.camera_code,
+                'camera_name': camera.name if camera else 'Unknown',
+                'status': worker.status,
+                'running': worker.running,
+                'frame_count': worker.frame_count,
+                'last_error': worker.last_error,
+                'uptime': worker.get_uptime(),
+                'events_detected': worker.events_detected,
+                'frames_processed': worker.frames_processed,
+                'start_time': worker.start_time.isoformat() if worker.start_time else None,
+            }
+    
+    # Also include cameras without workers
+    all_cameras = Camera.objects.all()
+    for camera in all_cameras:
+        if camera.id not in statuses:
+            statuses[camera.id] = {
+                'camera_id': camera.camera_id,
+                'camera_name': camera.name,
+                'status': 'stopped',
+                'running': False,
+                'frame_count': 0,
+                'last_error': None,
+                'uptime': 'Not running',
+                'events_detected': 0,
+                'frames_processed': 0,
+                'start_time': None,
+            }
+    
+    return JsonResponse({'workers': statuses})
+
+
+def start_all_background_workers_internal():
+    """Start background workers for all cameras (internal function - no request needed)
+    
+    This is called automatically when Django starts.
+    """
+    cameras = Camera.objects.filter(status__in=['online', 'offline'])
+    started = []
+    
+    models_dir = FLASK_DIR / 'models'
+    output_dir = settings.MEDIA_ROOT
+    
+    with background_worker_lock:
+        for camera in cameras:
+            if camera.id not in background_workers or not background_workers[camera.id].running:
+                try:
+                    worker = BackgroundCameraWorker(camera, models_dir, output_dir)
+                    worker.start()
+                    background_workers[camera.id] = worker
+                    started.append(camera.camera_id)
+                    print(f"  ▶ Started worker: {camera.camera_id} ({camera.name})")
+                except Exception as e:
+                    print(f"  ✗ Failed to start {camera.camera_id}: {e}")
+    
+    print(f"  Total: {len(started)} workers started")
+    return started
+
+
+@login_required
+@require_http_methods(['POST'])
+def start_all_background_workers(request):
+    """Start background workers for all cameras"""
+    if not request.user.is_admin():
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    
+    started = start_all_background_workers_internal()
+    return JsonResponse({'success': True, 'started': started, 'count': len(started)})
+
+
+@login_required
+@require_http_methods(['POST'])
+def stop_all_background_workers(request):
+    """Stop all background workers"""
+    if not request.user.is_admin():
+        return JsonResponse({'error': 'Admin only'}, status=403)
+    
+    stopped = []
+    with background_worker_lock:
+        for camera_id, worker in list(background_workers.items()):
+            worker.stop()
+            stopped.append(worker.camera_code)
+        background_workers.clear()
+    
+    return JsonResponse({'success': True, 'stopped': stopped, 'count': len(stopped)})

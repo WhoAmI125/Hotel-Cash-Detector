@@ -71,4 +71,11 @@ urlpatterns = [
     
     # Video streaming
     path('video-feed/<int:camera_id>/', views.video_feed, name='video_feed'),
+    
+    # Background workers API
+    path('api/workers/status/', views.get_background_worker_status, name='api_workers_status'),
+    path('api/workers/start-all/', views.start_all_background_workers, name='api_workers_start_all'),
+    path('api/workers/stop-all/', views.stop_all_background_workers, name='api_workers_stop_all'),
+    path('api/workers/<int:camera_id>/start/', views.start_background_worker, name='api_worker_start'),
+    path('api/workers/<int:camera_id>/stop/', views.stop_background_worker, name='api_worker_stop'),
 ]
