@@ -34,10 +34,10 @@ class UnifiedDetector:
         
         # Cashier zone settings
         self.cashier_zone_enabled = self.config.get('cashier_zone_enabled', True)
-        # Show zone overlay on video (UI only - hidden by default)
+        # Show zone overlay on video (UI only - hidden by default, shown in debug mode)
         self.show_zone_overlay = self.config.get('show_zone_overlay', False)
-        # Show pose overlay with hand positions and distances (enabled by default)
-        self.show_pose_overlay = self.config.get('show_pose_overlay', True)
+        # Show pose overlay with hand positions and distances (disabled by default, shown in debug mode)
+        self.show_pose_overlay = self.config.get('show_pose_overlay', False)
         
         # Initialize individual detectors
         self.cash_detector = CashTransactionDetector({
@@ -45,9 +45,9 @@ class UnifiedDetector:
             'cashier_zone': self.config.get('cashier_zone', [100, 100, 400, 300]),
             'hand_touch_distance': self.config.get('hand_touch_distance', 100),
             'pose_confidence': self.config.get('pose_confidence', 0.5),
-            'min_transaction_frames': self.config.get('min_transaction_frames', 3),
+            'min_transaction_frames': self.config.get('min_transaction_frames', 1),
             'cash_confidence': self.config.get('cash_confidence', 0.5),
-            'show_pose_overlay': self.config.get('show_pose_overlay', True),
+            'show_pose_overlay': self.config.get('show_pose_overlay', False),
         })
         
         self.violence_detector = ViolenceDetector({

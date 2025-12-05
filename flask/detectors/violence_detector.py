@@ -346,6 +346,7 @@ class ViolenceDetector(BaseDetector):
                 self.consecutive_violence = max(0, self.consecutive_violence - 1)
             
             # Generate detection after sustained indicators
+            # IMPORTANT: Also check that current detection meets confidence threshold
             if (self.consecutive_violence >= self.min_violence_frames and
                 self.frame_count - self.last_violence_frame > self.violence_cooldown and
                 len(violence_indicators) > 0):
@@ -353,20 +354,22 @@ class ViolenceDetector(BaseDetector):
                 # Find the highest confidence indicator
                 best_indicator = max(violence_indicators, key=lambda x: x['confidence'])
                 
-                detection = Detection(
-                    label="VIOLENCE",
-                    confidence=best_indicator['confidence'],
-                    bbox=best_indicator['bbox'],
-                    metadata={
-                        'type': best_indicator['type'],
-                        'people_count': len(people),
-                        'indicators_count': len(violence_indicators)
-                    }
-                )
-                detections.append(detection)
-                
-                self.last_violence_frame = self.frame_count
-                self.consecutive_violence = 0
+                # Only generate detection if confidence meets threshold
+                if best_indicator['confidence'] >= self.violence_confidence:
+                    detection = Detection(
+                        label="VIOLENCE",
+                        confidence=best_indicator['confidence'],
+                        bbox=best_indicator['bbox'],
+                        metadata={
+                            'type': best_indicator['type'],
+                            'people_count': len(people),
+                            'indicators_count': len(violence_indicators)
+                        }
+                    )
+                    detections.append(detection)
+                    
+                    self.last_violence_frame = self.frame_count
+                    self.consecutive_violence = 0
         
         except Exception as e:
             print(f"⚠️ Violence detection error: {e}")

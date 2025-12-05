@@ -313,9 +313,11 @@ class FireDetector(BaseDetector):
                 self.consecutive_fire = max(0, self.consecutive_fire - 1)
             
             # Generate fire alert after consecutive detections
+            # IMPORTANT: Also check that current frame meets confidence threshold
             if (self.consecutive_fire >= self.min_fire_frames and
                 self.frame_count - self.last_fire_frame > self.fire_cooldown and
-                best_detection is not None):
+                best_detection is not None and
+                best_detection['confidence'] >= self.fire_confidence):
                 
                 detection = Detection(
                     label="FIRE",
@@ -393,9 +395,11 @@ class FireDetector(BaseDetector):
                 self.consecutive_fire = max(0, self.consecutive_fire - 1)
             
             # Generate fire alert
+            # IMPORTANT: Also check that current frame meets confidence threshold
             if (self.consecutive_fire >= self.min_fire_frames and
                 self.frame_count - self.last_fire_frame > self.fire_cooldown and
-                best_fire_region is not None):
+                best_fire_region is not None and
+                fire_confidence > self.fire_confidence):
                 
                 detection = Detection(
                     label="FIRE",

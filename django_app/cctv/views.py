@@ -1241,7 +1241,7 @@ def get_detector_for_camera(camera):
             'hand_touch_distance': getattr(camera, 'hand_touch_distance', 100),
             # Other settings from global config
             'pose_confidence': settings.DETECTION_CONFIG.get('POSE_CONFIDENCE', 0.5),
-            'min_transaction_frames': settings.DETECTION_CONFIG.get('MIN_TRANSACTION_FRAMES', 30),
+            'min_transaction_frames': settings.DETECTION_CONFIG.get('MIN_TRANSACTION_FRAMES', 1),
             'min_fire_frames': settings.DETECTION_CONFIG.get('MIN_FIRE_FRAMES', 15),
             'min_fire_area': settings.DETECTION_CONFIG.get('MIN_FIRE_AREA', 500),
             'violence_duration': settings.DETECTION_CONFIG.get('VIOLENCE_DURATION', 30),
@@ -2093,12 +2093,20 @@ class BackgroundCameraWorker:
         self.thread = None
         self.detector = None
         self.last_event_time = {}
-        self.event_cooldown = 30
-        self.clip_buffer = []
-        self.clip_buffer_size = 1800
+        self.event_cooldown = 30  # seconds between events
+        self.clip_buffer = []  # Stores frames WITH detection overlays
+        self.clip_buffer_size = 900  # 30 seconds at 30fps
+        self.clip_duration_sec = 30  # clip duration in seconds
         self.frame_count = 0
         self.status = 'stopped'
         self.last_error = None
+        
+        # Track when clips were saved to avoid duplicates
+        self.last_clip_time = {}  # event_type -> timestamp
+        self.last_clip_path = {}  # event_type -> clip_path
+        
+        # Track detection frame index for clip extraction
+        self.detection_frame_index = None  # Index in buffer when detection occurred
         
         # Shared frame for live viewing (no need to reconnect!)
         self.current_frame = None
@@ -2109,6 +2117,11 @@ class BackgroundCameraWorker:
         self.start_time = None
         self.events_detected = 0
         self.frames_processed = 0
+        
+        # Pending clip saves (for async saving)
+        self.pending_clips = []  # List of (timestamp, frames, camera_id, event_type, confidence, bbox)
+        self.clip_save_lock = threading.Lock()
+        self.clip_save_delay = 30  # Wait 30 seconds before saving clip
     
     def get_uptime(self):
         """Get worker uptime as formatted string"""
@@ -2175,7 +2188,7 @@ class BackgroundCameraWorker:
             'cashier_zone': [zone['x'], zone['y'], zone['width'], zone['height']],
             'hand_touch_distance': camera.hand_touch_distance,
             'pose_confidence': 0.5,
-            'min_transaction_frames': 5,
+            'min_transaction_frames': 1,  # Immediate cash detection
             'fire_confidence': camera.fire_confidence,
             'min_fire_frames': 3,
             'violence_confidence': camera.violence_confidence,
@@ -2211,66 +2224,110 @@ class BackgroundCameraWorker:
         return event
     
     def save_clip(self, frames, camera, detection_type, fps=30):
-        if not frames:
+        """Save video clip directly to media folder for web access.
+        
+        Uses H.264 encoding via ffmpeg for browser compatibility.
+        """
+        if not frames or len(frames) == 0:
+            print(f"[Clip] No frames to save")
             return None
         
         import cv2
         import subprocess
+        import shutil
+        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         
-        # Save as temporary mp4 first, then convert to web-compatible format
-        temp_filename = f"{camera.camera_id}_{detection_type}_{timestamp}_temp.mp4"
-        final_filename = f"{camera.camera_id}_{detection_type}_{timestamp}.mp4"
-        
-        clip_dir = Path(self.output_dir) / 'clips'
+        # Save to media/clips for web access
+        clip_dir = Path(settings.MEDIA_ROOT) / 'clips'
         clip_dir.mkdir(parents=True, exist_ok=True)
+        
+        thumb_dir = Path(settings.MEDIA_ROOT) / 'thumbnails'
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        
+        temp_filename = f"{camera.camera_id}_{detection_type}_{timestamp}_temp.avi"
+        final_filename = f"{camera.camera_id}_{detection_type}_{timestamp}.mp4"
         
         temp_path = clip_dir / temp_filename
         final_path = clip_dir / final_filename
         
         height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        
+        # Use MJPG codec for temp file (reliable, fast)
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(str(temp_path), fourcc, fps, (width, height))
+        
+        if not out.isOpened():
+            print(f"[Clip] Failed to open video writer")
+            return None
+        
+        # Write frames with detection label
+        frame_count = 0
         for frame in frames:
+            if frame is None:
+                continue
+            # Add detection type label
+            label = f"{detection_type.upper()} DETECTED"
+            cv2.rectangle(frame, (10, 10), (250, 45), (0, 0, 0), -1)
+            color = {'cash': (0, 255, 0), 'violence': (0, 0, 255), 'fire': (0, 165, 255)}.get(detection_type, (255, 255, 255))
+            cv2.putText(frame, label, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             out.write(frame)
+            frame_count += 1
+        
         out.release()
         
-        # Try to convert to H.264 using ffmpeg for browser compatibility and seeking support
+        print(f"[Clip] Wrote {frame_count} frames to temp file")
+        
+        # Convert to H.264 MP4 using ffmpeg
         try:
             result = subprocess.run([
                 'ffmpeg', '-y', '-i', str(temp_path),
                 '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                '-pix_fmt', 'yuv420p',  # Ensure browser compatibility
-                '-movflags', '+faststart',  # Move moov atom to beginning for seeking
-                '-g', '30',  # Keyframe every 30 frames for better seeking
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                '-r', str(fps),
                 str(final_path)
-            ], capture_output=True, timeout=120)
+            ], capture_output=True, timeout=180)
+            
+            # Clean up temp file
+            if temp_path.exists():
+                temp_path.unlink()
             
             if result.returncode == 0 and final_path.exists():
-                # Remove temp file
-                temp_path.unlink(missing_ok=True)
-                print(f"[Clip] Saved H.264 clip: {final_filename}")
+                print(f"[Clip] Saved: {final_path} ({final_path.stat().st_size / 1024:.1f} KB)")
             else:
-                # ffmpeg failed, try alternative encoding
-                print(f"[Clip] FFmpeg failed, trying fallback: {result.stderr.decode()[:200]}")
-                temp_path.rename(final_path)
+                print(f"[Clip] FFmpeg error: {result.stderr.decode()[:300]}")
+                return None
+                
         except subprocess.TimeoutExpired:
-            print(f"[Clip] FFmpeg timeout, using original file")
+            print(f"[Clip] FFmpeg timeout")
             if temp_path.exists():
-                temp_path.rename(final_path)
+                temp_path.unlink()
+            return None
         except FileNotFoundError:
-            # ffmpeg not available, use original file (seeking may not work)
-            print(f"[Clip] FFmpeg not found, using mp4v codec (seeking may not work)")
+            print(f"[Clip] FFmpeg not found")
             if temp_path.exists():
-                temp_path.rename(final_path)
+                temp_path.unlink()
+            return None
+        except Exception as e:
+            print(f"[Clip] Error: {e}")
+            if temp_path.exists():
+                temp_path.unlink()
+            return None
         
-        # Thumbnail
+        # Save thumbnail from last frame
         thumb_filename = f"{camera.camera_id}_{detection_type}_{timestamp}.jpg"
-        thumb_path = Path(self.output_dir) / 'thumbnails' / thumb_filename
-        thumb_path.parent.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(thumb_path), frames[len(frames)//2])
+        thumb_path = thumb_dir / thumb_filename
         
-        # Return relative URLs for web access
+        thumb_frame = frames[-1].copy()
+        label = f"{detection_type.upper()}"
+        color = {'cash': (0, 255, 0), 'violence': (0, 0, 255), 'fire': (0, 165, 255)}.get(detection_type, (255, 255, 255))
+        cv2.rectangle(thumb_frame, (10, 10), (150, 45), (0, 0, 0), -1)
+        cv2.putText(thumb_frame, label, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        cv2.imwrite(str(thumb_path), thumb_frame)
+        
+        print(f"[Clip] Thumbnail: {thumb_path}")
+        
         return f'/media/clips/{final_filename}', f'/media/thumbnails/{thumb_filename}'
     
     def run(self):
@@ -2332,11 +2389,6 @@ class BackgroundCameraWorker:
             
             self.frame_count += 1
             
-            # Buffer for clips
-            self.clip_buffer.append(frame.copy())
-            if len(self.clip_buffer) > self.clip_buffer_size:
-                self.clip_buffer.pop(0)
-            
             if self.frame_count % 2 != 0:
                 continue
             
@@ -2350,19 +2402,25 @@ class BackgroundCameraWorker:
                 last_settings_check = time.time()
             
             try:
-                # Process without overlay for detection
-                result = self.detector.process_frame(frame, draw_overlay=False)
-                
-                # Also create a frame with overlay for live viewing
+                # Process frame WITH overlay - this will show detection boxes
                 result_with_overlay = self.detector.process_frame(frame.copy(), draw_overlay=True)
+                frame_with_overlay = result_with_overlay.get('frame', frame)
+                
+                # Buffer frames WITH detection overlays for clip saving
+                self.clip_buffer.append(frame_with_overlay.copy())
+                if len(self.clip_buffer) > self.clip_buffer_size:
+                    self.clip_buffer.pop(0)
                 
                 # Store current frames for live viewing (shared connection!)
                 with self.frame_lock:
                     self.current_frame = frame.copy()
-                    self.current_frame_with_overlay = result_with_overlay.get('frame', frame)
+                    self.current_frame_with_overlay = frame_with_overlay
                 
                 # Track frames processed
                 self.frames_processed += 1
+                
+                # Get detections from the result
+                result = result_with_overlay
                     
             except Exception as e:
                 self.last_error = str(e)
@@ -2384,12 +2442,19 @@ class BackgroundCameraWorker:
                     else:
                         continue
                     
-                    clip_path = thumb_path = None
-                    if self.clip_buffer:
-                        paths = self.save_clip(self.clip_buffer.copy(), camera, event_type, fps)
-                        if paths:
-                            clip_path, thumb_path = paths
+                    # Save clip immediately with event
+                    clip_path = None
+                    thumb_path = None
                     
+                    if self.clip_buffer and len(self.clip_buffer) > 0:
+                        try:
+                            paths = self.save_clip(self.clip_buffer.copy(), camera, event_type, fps)
+                            if paths:
+                                clip_path, thumb_path = paths
+                        except Exception as e:
+                            print(f"[Clip] Save error: {e}")
+                    
+                    # Save event with clip path
                     try:
                         self.save_event(camera, event_type, confidence, self.frame_count, bbox, clip_path, thumb_path)
                     except Exception as e:

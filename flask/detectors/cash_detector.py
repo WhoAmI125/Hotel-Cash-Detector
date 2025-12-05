@@ -44,11 +44,11 @@ class CashTransactionDetector(BaseDetector):
         # Detection parameters
         self.hand_touch_distance = config.get('hand_touch_distance', 100)
         self.pose_confidence = config.get('pose_confidence', 0.5)
-        self.min_transaction_frames = config.get('min_transaction_frames', 3)
+        self.min_transaction_frames = config.get('min_transaction_frames', 1)  # Immediate detection
         self.min_cash_confidence = config.get('min_cash_confidence', 0.70)  # 70% minimum
         
-        # Show pose overlay with hand positions and distances
-        self.show_pose_overlay = config.get('show_pose_overlay', True)
+        # Show pose overlay with hand positions and distances (disabled by default, debug only)
+        self.show_pose_overlay = config.get('show_pose_overlay', False)
         
         # Tracking state
         self.potential_transactions = deque(maxlen=30)  # Last 30 frames
@@ -189,17 +189,11 @@ class CashTransactionDetector(BaseDetector):
         Detect when hands from different people are close together
         (indicating potential cash exchange)
         
-        Uses OR logic: triggers if EITHER:
-        - Distance is within hand_touch_distance threshold, OR
-        - Confidence is high enough (>= min_cash_confidence)
-        
-        This ensures detection works even if one metric is slightly off.
+        STRICT DISTANCE-ONLY logic:
+        - Only triggers when distance is within hand_touch_distance threshold
+        - No confidence-based override
         """
         proximity_events = []
-        
-        # Use a more relaxed distance threshold for initial detection
-        # Will use actual distance for scoring later
-        max_detection_distance = self.hand_touch_distance * 1.5  # 50% more lenient
         
         for i, person1 in enumerate(people_hands):
             for j, person2 in enumerate(people_hands):
@@ -212,23 +206,16 @@ class CashTransactionDetector(BaseDetector):
                         distance = self.calculate_hand_distance(hand1_pos[:2], hand2_pos[:2])
                         hand_confidence = min(hand1_pos[2], hand2_pos[2])
                         
-                        # OR logic: accept if EITHER distance OR confidence is good
-                        distance_ok = distance < self.hand_touch_distance
-                        confidence_ok = hand_confidence >= self.min_cash_confidence
-                        distance_close_enough = distance < max_detection_distance
-                        
-                        # Trigger if: (distance OK) OR (confidence high AND distance reasonably close)
-                        if distance_ok or (confidence_ok and distance_close_enough):
+                        # STRICT: Only accept if distance is within threshold
+                        if distance < self.hand_touch_distance:
                             # Calculate midpoint of the hand interaction
                             midpoint = (
                                 (hand1_pos[0] + hand2_pos[0]) // 2,
                                 (hand1_pos[1] + hand2_pos[1]) // 2
                             )
                             
-                            # Calculate combined score (higher is better)
-                            # Normalize distance score: 1.0 when touching, 0.0 at max_detection_distance
-                            distance_score = max(0, 1 - (distance / max_detection_distance))
-                            combined_score = (distance_score + hand_confidence) / 2
+                            # Calculate score based on distance (closer = higher score)
+                            distance_score = max(0, 1 - (distance / self.hand_touch_distance))
                             
                             proximity_events.append({
                                 'person1_idx': i,
@@ -238,10 +225,7 @@ class CashTransactionDetector(BaseDetector):
                                 'distance': distance,
                                 'midpoint': midpoint,
                                 'confidence': hand_confidence,
-                                'distance_score': distance_score,
-                                'combined_score': combined_score,
-                                'distance_ok': distance_ok,
-                                'confidence_ok': confidence_ok
+                                'distance_score': distance_score
                             })
         
         return proximity_events
@@ -304,23 +288,24 @@ class CashTransactionDetector(BaseDetector):
                     else:
                         customer_zone_people.append(person_info)
             
-            # Look for hand proximity events
+            # Look for hand proximity events between people
             hand_events = self.detect_hand_proximity(people_hands)
             
-            # Accept ANY hand proximity event between two different people
-            # No longer require one person inside and one outside cashier zone
-            # Just require that at least one person is near/in the cashier zone area
+            # STRICT: Require ONE person IN cashier zone (cashier) and ONE OUTSIDE (customer)
+            # This ensures we only detect actual cashier-customer transactions
             transaction_events = []
             for event in hand_events:
                 p1 = people_hands[event['person1_idx']]
                 p2 = people_hands[event['person2_idx']]
                 
-                # Accept if at least one person is in or near cashier zone
-                # OR if the midpoint of the hand interaction is in the zone
-                either_in_zone = p1['in_cashier_zone'] or p2['in_cashier_zone']
-                midpoint_in_zone = self.is_in_cashier_zone(event['midpoint'])
+                # One must be IN zone (cashier), one must be OUTSIDE (customer)
+                p1_in = p1['in_cashier_zone']
+                p2_in = p2['in_cashier_zone']
                 
-                if either_in_zone or midpoint_in_zone:
+                # XOR: exactly one person in zone, one outside
+                cashier_customer_pair = (p1_in and not p2_in) or (not p1_in and p2_in)
+                
+                if cashier_customer_pair:
                     transaction_events.append(event)
             
             # Track potential transactions
@@ -337,17 +322,11 @@ class CashTransactionDetector(BaseDetector):
                 self.frame_count - self.last_transaction_frame > self.transaction_cooldown and
                 len(transaction_events) > 0):
                 
-                # Find the best transaction event using combined score
-                best_event = max(transaction_events, key=lambda x: x.get('combined_score', x['confidence']))
+                # Find the best transaction event using distance score
+                best_event = max(transaction_events, key=lambda x: x.get('distance_score', 0))
                 
-                # OR logic for final confirmation:
-                # Accept if EITHER distance is good OR confidence is good
-                distance_ok = best_event.get('distance_ok', best_event['distance'] < self.hand_touch_distance)
-                confidence_ok = best_event.get('confidence_ok', best_event['confidence'] >= self.min_cash_confidence)
-                
-                # Must pass at least one threshold
-                if not (distance_ok or confidence_ok):
-                    return detections
+                # STRICT: Only accept if distance is within threshold (already filtered above)
+                # No OR logic - distance must be satisfied
                 
                 # Create bounding box around the transaction area
                 mp = best_event['midpoint']
@@ -358,8 +337,8 @@ class CashTransactionDetector(BaseDetector):
                     min(frame.shape[0], mp[1] + 60)
                 )
                 
-                # Use combined score as the reported confidence
-                reported_confidence = best_event.get('combined_score', best_event['confidence'])
+                # Use distance score as confidence (closer hands = higher confidence)
+                reported_confidence = best_event.get('distance_score', best_event['confidence'])
                 
                 detection = Detection(
                     label="CASH",
@@ -369,8 +348,7 @@ class CashTransactionDetector(BaseDetector):
                         'type': 'hand_exchange',
                         'distance': best_event['distance'],
                         'hand_confidence': best_event['confidence'],
-                        'distance_ok': distance_ok,
-                        'confidence_ok': confidence_ok,
+                        'distance_threshold': self.hand_touch_distance,
                         'people_count': len(people_hands),
                         'cashier_zone': self.cashier_zone
                     }

@@ -34,7 +34,7 @@ class DetectionConfig:
     
     # Cash transaction detection
     HAND_TOUCH_DISTANCE = 80  # pixels - distance to consider hands touching
-    MIN_TRANSACTION_FRAMES = 3  # minimum frames to confirm transaction
+    MIN_TRANSACTION_FRAMES = 1  # minimum frames to confirm transaction (immediate)
     
     # Violence detection
     VIOLENCE_CONFIDENCE = 0.6
