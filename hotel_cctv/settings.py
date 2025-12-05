@@ -135,10 +135,10 @@ DETECTION_CONFIG = {
     'OUTPUT_DIR': BASE_DIR / os.getenv('OUTPUT_DIR', 'output'),
     'UPLOAD_DIR': BASE_DIR / os.getenv('UPLOAD_DIR', 'uploads'),
     
-    # Model paths from environment (relative to MODELS_DIR)
-    'YOLO_MODEL': os.getenv('YOLO_MODEL_PATH', 'models/yolov8s.pt'),
-    'POSE_MODEL': os.getenv('POSE_MODEL_PATH', 'models/yolov8s-pose.pt'),
-    'FIRE_MODEL': os.getenv('FIRE_MODEL_PATH', 'models/fire_smoke_yolov8.pt'),
+    # Model filenames (relative to MODELS_DIR)
+    'YOLO_MODEL': os.getenv('YOLO_MODEL', 'yolov8s.pt'),
+    'POSE_MODEL': os.getenv('POSE_MODEL', 'yolov8s-pose.pt'),
+    'FIRE_MODEL': os.getenv('FIRE_MODEL', 'fire_smoke_yolov8.pt'),
     
     # Default detection thresholds (can be overridden per camera)
     'CONFIDENCE_THRESHOLD': float(os.getenv('CASH_DETECTION_CONFIDENCE', '0.5')),

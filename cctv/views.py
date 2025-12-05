@@ -22,17 +22,16 @@ from django.conf import settings
 from .models import User, Region, Branch, Camera, Event, VideoRecord, BranchAccount
 from .translations import get_translation, t
 
-# Add flask directory to path for detector imports
-FLASK_DIR = Path(settings.BASE_DIR).parent / 'flask'
-sys.path.insert(0, str(FLASK_DIR))
+# Add root directory to path for detector imports
+sys.path.insert(0, str(settings.BASE_DIR))
 
 # Try to import detectors
 try:
     from detectors import UnifiedDetector
     DETECTOR_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     DETECTOR_AVAILABLE = False
-    print("Warning: Detectors not available")
+    print(f"Warning: Detectors not available - {e}")
 
 import threading
 import time
@@ -1408,11 +1407,14 @@ def get_debug_pose_model():
             from ultralytics import YOLO
             from pathlib import Path
             models_dir = Path(settings.DETECTION_CONFIG['MODELS_DIR'])
-            pose_path = models_dir / "yolov8n-pose.pt"
+            pose_model_name = settings.DETECTION_CONFIG.get('POSE_MODEL', 'yolov8s-pose.pt')
+            pose_path = models_dir / pose_model_name
             if pose_path.exists():
                 _debug_pose_model = YOLO(str(pose_path))
+                print(f"[Debug] Loaded pose model: {pose_path}")
             else:
-                _debug_pose_model = YOLO("yolov8n-pose.pt")
+                _debug_pose_model = YOLO(pose_model_name)
+                print(f"[Debug] Downloaded pose model: {pose_model_name}")
         except Exception as e:
             print(f"Failed to load debug pose model: {e}")
     return _debug_pose_model
@@ -2102,6 +2104,7 @@ class BackgroundCameraWorker:
         self.output_dir = output_dir
         self.running = False
         self.thread = None
+        self.detection_thread = None  # Separate detection thread
         self.detector = None
         self.last_event_time = {}
         self.event_cooldown = 30  # seconds between events
@@ -2123,6 +2126,10 @@ class BackgroundCameraWorker:
         self.current_frame = None
         self.current_frame_with_overlay = None
         self.frame_lock = threading.Lock()
+        
+        # Frame queue for detection processing (non-blocking)
+        self.detection_queue = None  # Will be queue.Queue
+        self.detection_queue_maxsize = 5  # Small queue to prevent memory buildup
         
         # Uptime tracking
         self.start_time = None
@@ -2162,15 +2169,18 @@ class BackgroundCameraWorker:
         import os
         
         # Set FFmpeg options via environment for better RTSP handling
-        # Use TCP transport to avoid UDP packet loss/reordering issues
-        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp|stimeout;5000000'
+        # - rtsp_transport=tcp: Use TCP instead of UDP to avoid packet loss
+        # - stimeout=60000000: 60 second socket timeout (in microseconds)
+        # - max_delay=500000: Max delay 0.5 seconds
+        # - fflags=nobuffer: Reduce buffering for lower latency
+        os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp|stimeout;60000000|max_delay;500000|fflags;nobuffer'
         
         cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
         
         # Set additional capture properties
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000)  # 10s connection timeout
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 10000)  # 10s read timeout
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 3)  # Smaller buffer for lower latency
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 15000)  # 15s connection timeout
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 15000)  # 15s read timeout
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer for lowest latency
         
         return cap
     
@@ -2196,6 +2206,11 @@ class BackgroundCameraWorker:
         zone = camera.get_cashier_zone()
         config = {
             'models_dir': str(self.models_dir),
+            # Model names from settings
+            'pose_model': settings.DETECTION_CONFIG.get('POSE_MODEL', 'yolov8s-pose.pt'),
+            'yolo_model': settings.DETECTION_CONFIG.get('YOLO_MODEL', 'yolov8s.pt'),
+            'fire_model': settings.DETECTION_CONFIG.get('FIRE_MODEL', 'fire_smoke_yolov8.pt'),
+            # Detection settings
             'cashier_zone': [zone['x'], zone['y'], zone['width'], zone['height']],
             'hand_touch_distance': camera.hand_touch_distance,
             'pose_confidence': 0.5,
@@ -2373,7 +2388,12 @@ class BackgroundCameraWorker:
             pass
     
     def run(self):
+        """Main frame reading loop - ONLY reads frames, never blocks on detection.
+        
+        Detection happens in a separate thread (run_detection) to prevent stream freezing.
+        """
         import cv2
+        import queue
         from django.db import connection
         connection.close()
         
@@ -2396,6 +2416,14 @@ class BackgroundCameraWorker:
             self.last_error = 'Detector not available'
             return
         
+        # Initialize detection queue
+        self.detection_queue = queue.Queue(maxsize=self.detection_queue_maxsize)
+        
+        # Start detection thread (separate from frame reading)
+        self.detection_thread = threading.Thread(target=self.run_detection, daemon=True)
+        self.detection_thread.start()
+        print(f"[Worker] Started detection thread for camera {camera.camera_id}")
+        
         cap = self._create_rtsp_capture(camera.rtsp_url)
         if not cap.isOpened():
             self.status = 'error'
@@ -2410,9 +2438,9 @@ class BackgroundCameraWorker:
         camera.last_connected = timezone.now()
         camera.save()
         
-        last_settings_check = time.time()
         consecutive_failures = 0
         max_failures = 10  # Max consecutive read failures before reconnect
+        frame_count = 0
         
         while self.running:
             ret, frame = cap.read()
@@ -2431,49 +2459,109 @@ class BackgroundCameraWorker:
                 continue
             
             consecutive_failures = 0  # Reset on successful read
+            frame_count += 1
+            self.frame_count = frame_count
             
-            self.frame_count += 1
+            # ALWAYS update current frame immediately (never blocks)
+            with self.frame_lock:
+                self.current_frame = frame.copy()
+                # If no overlay yet, use raw frame
+                if self.current_frame_with_overlay is None:
+                    self.current_frame_with_overlay = frame.copy()
             
-            if self.frame_count % 2 != 0:
+            # Send every 3rd frame to detection queue (non-blocking)
+            if frame_count % 3 == 0:
+                try:
+                    # Put frame in queue for detection (don't wait if full)
+                    self.detection_queue.put_nowait((frame.copy(), frame_count, fps))
+                except queue.Full:
+                    # Queue full - detection is slow, skip this frame
+                    pass
+            
+            # Small sleep to prevent CPU spin
+            time.sleep(0.001)
+        
+        cap.release()
+        
+        # Stop detection thread
+        if self.detection_queue:
+            try:
+                self.detection_queue.put_nowait(None)  # Signal to stop
+            except:
+                pass
+        
+        if self.detection_thread:
+            self.detection_thread.join(timeout=5)
+        
+        self.status = 'stopped'
+        camera = self.get_camera()
+        if camera:
+            camera.status = 'offline'
+            camera.save()
+    
+    def run_detection(self):
+        """Detection processing loop - runs in separate thread.
+        
+        Processes frames from queue without blocking frame reading.
+        """
+        from django.db import connection
+        connection.close()
+        
+        camera = self.get_camera()
+        if not camera:
+            return
+        
+        last_settings_check = time.time()
+        
+        print(f"[Detection] Started detection loop for camera {camera.camera_id}")
+        
+        while self.running:
+            try:
+                # Wait for frame from queue (with timeout to check running flag)
+                item = self.detection_queue.get(timeout=1.0)
+                
+                if item is None:  # Stop signal
+                    break
+                
+                frame, frame_count, fps = item
+                
+            except Exception:
+                # Timeout or empty queue - just continue
                 continue
             
-            # Reload settings
+            # Reload camera settings periodically
             if time.time() - last_settings_check > 30:
                 camera = self.get_camera()
-                if camera:
+                if camera and self.detector:
                     self.detector.detect_cash = camera.detect_cash
                     self.detector.detect_violence = camera.detect_violence
                     self.detector.detect_fire = camera.detect_fire
                 last_settings_check = time.time()
             
             try:
-                # Process frame WITH overlay - this will show detection boxes
-                result_with_overlay = self.detector.process_frame(frame.copy(), draw_overlay=True)
-                frame_with_overlay = result_with_overlay.get('frame', frame)
+                # Process frame WITH overlay
+                result = self.detector.process_frame(frame.copy(), draw_overlay=True)
+                frame_with_overlay = result.get('frame', frame)
                 
-                # Buffer frames WITH detection overlays for clip saving
+                # Buffer frames for clip saving
                 self.clip_buffer.append(frame_with_overlay.copy())
                 if len(self.clip_buffer) > self.clip_buffer_size:
                     self.clip_buffer.pop(0)
                 
-                # Store current frames for live viewing (shared connection!)
+                # Update overlay frame for live viewing
                 with self.frame_lock:
-                    self.current_frame = frame.copy()
                     self.current_frame_with_overlay = frame_with_overlay
                 
                 # Track frames processed
                 self.frames_processed += 1
                 
-                # Get detections from the result
-                result = result_with_overlay
-                    
             except Exception as e:
-                self.last_error = str(e)
+                self.last_error = f"Detection error: {str(e)}"
                 continue
             
+            # Handle detections
             if result.get('detections'):
                 for det in result['detections']:
-                    # Detection uses 'label' not 'type'
                     det_label = det.get('label', '').lower()
                     confidence = det.get('confidence', 0)
                     bbox = det.get('bbox')
@@ -2487,7 +2575,7 @@ class BackgroundCameraWorker:
                     else:
                         continue
                     
-                    # Save clip immediately with event
+                    # Save clip (runs in detection thread, doesn't block streaming)
                     clip_path = None
                     thumb_path = None
                     
@@ -2499,20 +2587,14 @@ class BackgroundCameraWorker:
                         except Exception as e:
                             print(f"[Clip] Save error: {e}")
                     
-                    # Save event with clip path
+                    # Save event
                     try:
-                        self.save_event(camera, event_type, confidence, self.frame_count, bbox, clip_path, thumb_path)
+                        self.save_event(camera, event_type, confidence, frame_count, bbox, clip_path, thumb_path)
+                        self.events_detected += 1
                     except Exception as e:
                         self.last_error = f"Event save error: {str(e)}"
-            
-            time.sleep(0.01)
         
-        cap.release()
-        self.status = 'stopped'
-        camera = self.get_camera()
-        if camera:
-            camera.status = 'offline'
-            camera.save()
+        print(f"[Detection] Stopped detection loop for camera {camera.camera_id}")
     
     def start(self):
         if self.running:
@@ -2524,6 +2606,19 @@ class BackgroundCameraWorker:
     
     def stop(self):
         self.running = False
+        
+        # Signal detection thread to stop
+        if self.detection_queue:
+            try:
+                self.detection_queue.put_nowait(None)
+            except:
+                pass
+        
+        # Wait for detection thread
+        if self.detection_thread:
+            self.detection_thread.join(timeout=5)
+        
+        # Wait for main thread
         if self.thread:
             self.thread.join(timeout=5)
         return True
@@ -2542,7 +2637,7 @@ def start_background_worker(request, camera_id):
         if camera_id in background_workers and background_workers[camera_id].running:
             return JsonResponse({'error': 'Worker already running', 'status': 'running'})
         
-        models_dir = FLASK_DIR / 'models'
+        models_dir = settings.BASE_DIR / 'models'
         output_dir = settings.MEDIA_ROOT
         
         worker = BackgroundCameraWorker(camera, models_dir, output_dir)
@@ -2621,7 +2716,7 @@ def start_all_background_workers_internal():
     cameras = Camera.objects.filter(status__in=['online', 'offline'])
     started = []
     
-    models_dir = FLASK_DIR / 'models'
+    models_dir = settings.BASE_DIR / 'models'
     output_dir = settings.MEDIA_ROOT
     
     with background_worker_lock:

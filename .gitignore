@@ -1,5 +1,5 @@
 # Environment files
-.env
+
 .env.example
 .env.local
 .env.production
@@ -32,10 +32,7 @@ venv/
 ENV/
 
 # YOLO Models (large files)
-*.pt
-/models/
-/django_app/models/
-/flask/models/
+
 
 # Media files (generated)
 *.mp4
@@ -49,9 +46,8 @@ ENV/
 /flask/uploads/
 
 # Database
-*.sqlite3
 *.db
-db.sqlite3
+
 
 # IDE
 .idea/
